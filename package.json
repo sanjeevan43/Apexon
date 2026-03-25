@@ -1,0 +1,60 @@
+{
+  "name": "apexon",
+  "displayName": "Apexon",
+  "description": "Detect, run, and validate API endpoints in your workspace",
+  "version": "0.2.1",
+  "publisher": "sanjeevan43",
+  "license": "MIT",
+  "icon": "logo.png",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Testing"
+  ],
+  "activationEvents": [
+    "onCommand:apexon.openPanel"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "apexon.openPanel",
+        "title": "Apexon: Open Panel"
+      }
+    ],
+    "configuration": {
+      "title": "Apexon",
+      "properties": {
+        "apexon.baseURL": {
+          "type": "string",
+          "default": "http://localhost:8000",
+          "description": "Base URL of the server to test against"
+        },
+        "apexon.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Bearer token for Authorization header"
+        },
+        "apexon.timeout": {
+          "type": "number",
+          "default": 5000,
+          "description": "Request timeout in milliseconds"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0"
+  },
+  "dependencies": {
+    "axios": "^1.6.0"
+  }
+}
