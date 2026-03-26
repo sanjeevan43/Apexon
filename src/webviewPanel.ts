@@ -2,8 +2,8 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import { scanWorkspace, Endpoint } from './scanner';
 import { detectFramework } from './frameworkDetector';
-import { ensureServerRunning } from './serverManager';
 import { runRequest, TestResult } from './requestRunner';
+import { ensureServerRunning, killServer } from './serverManager';
 import { explainWithAI, AIAnalysis, generateRequestBodyWithAI, autoExpandUrlWithAI, generateOpenAPISpecWithAI } from './errorExplainer';
 
 function getConfig<T>(key: string): T {
@@ -72,9 +72,6 @@ export class ApexonDashboard implements vscode.WebviewViewProvider {
 
   private async doStop() {
     this.post({ command: 'status', text: '🛑 STOPPING...', active: false });
-    // This will kill any current doRun loop if it checks for a cancellation token, 
-    // but for now we'll just show it's stopped and kill the server if needed.
-    const { killServer } = require('./serverManager');
     killServer();
   }
 
@@ -364,7 +361,10 @@ export class ApexonDashboard implements vscode.WebviewViewProvider {
       <button id="scan-btn" style="background:var(--card); border:1px solid var(--accent); color:var(--accent)">1. SCAN</button>
       <button id="auto-btn" style="background:var(--accent); color:#fff">2. TEST ALL</button>
     </div>
-    <button id="stop-btn" style="background:#ef4444; color:#fff; margin-top:8px; opacity:0.8">STOP</button>
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px; margin-top:8px">
+      <button id="run-btn" style="background: #334155; color: #fff;">EXECUTE SELECTED</button>
+      <button id="stop-btn" style="background:#ef4444; color:#fff; opacity:0.8">STOP</button>
+    </div>
   </div>
   <div class="list" id="list"></div>
   <div id="status-bar">Ready</div>
@@ -393,8 +393,8 @@ export class ApexonDashboard implements vscode.WebviewViewProvider {
     });
 
     document.getElementById('stop-btn').addEventListener('click', function() {
-      window.location.reload(); // Quick reset
       vscode.postMessage({ command: 'stop' });
+      list.innerHTML = '<div style="text-align:center;padding:20px;color:gray">Discovery complete. Ready to execute.</div>';
     });
 
     document.getElementById('run-btn').addEventListener('click', function() {

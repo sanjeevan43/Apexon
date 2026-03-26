@@ -38,8 +38,8 @@ const vscode = __importStar(require("vscode"));
 const fs = __importStar(require("fs"));
 const scanner_1 = require("./scanner");
 const frameworkDetector_1 = require("./frameworkDetector");
-const serverManager_1 = require("./serverManager");
 const requestRunner_1 = require("./requestRunner");
+const serverManager_1 = require("./serverManager");
 const errorExplainer_1 = require("./errorExplainer");
 function getConfig(key) {
     return vscode.workspace.getConfiguration('apexon').get(key);
@@ -110,10 +110,7 @@ class ApexonDashboard {
     }
     async doStop() {
         this.post({ command: 'status', text: '🛑 STOPPING...', active: false });
-        // This will kill any current doRun loop if it checks for a cancellation token, 
-        // but for now we'll just show it's stopped and kill the server if needed.
-        const { killServer } = require('./serverManager');
-        killServer();
+        (0, serverManager_1.killServer)();
     }
     async doSwaggerPilot(baseURL, apiKey) {
         this.post({ command: 'status', text: '🤖 GENERATING AI SWAGGER SPEC...' });
@@ -390,7 +387,10 @@ class ApexonDashboard {
       <button id="scan-btn" style="background:var(--card); border:1px solid var(--accent); color:var(--accent)">1. SCAN</button>
       <button id="auto-btn" style="background:var(--accent); color:#fff">2. TEST ALL</button>
     </div>
-    <button id="stop-btn" style="background:#ef4444; color:#fff; margin-top:8px; opacity:0.8">STOP</button>
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px; margin-top:8px">
+      <button id="run-btn" style="background: #334155; color: #fff;">EXECUTE SELECTED</button>
+      <button id="stop-btn" style="background:#ef4444; color:#fff; opacity:0.8">STOP</button>
+    </div>
   </div>
   <div class="list" id="list"></div>
   <div id="status-bar">Ready</div>
@@ -419,8 +419,8 @@ class ApexonDashboard {
     });
 
     document.getElementById('stop-btn').addEventListener('click', function() {
-      window.location.reload(); // Quick reset
       vscode.postMessage({ command: 'stop' });
+      list.innerHTML = '<div style="text-align:center;padding:20px;color:gray">Discovery complete. Ready to execute.</div>';
     });
 
     document.getElementById('run-btn').addEventListener('click', function() {
