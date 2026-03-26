@@ -527,15 +527,16 @@ class ApexonDashboard {
               '<div style="flex:1; display:flex; align-items:center; gap:10px" onclick="document.getElementById(\\'i-' + i + '\\').classList.toggle(\\'open\\')">' +
                 '<span class="method">' + ep.method + '</span>' +
                 '<span class="path">' + ep.path + '</span>' +
-                '<span class="tag ' + (res?.passed ? 'passed' : (res ? 'failed' : '')) + '">' + (res ? (res.status || 'FAIL') : '') + '</span>' +
+                '<span class="tag ' + (res?.passed ? 'passed' : (res ? 'failed' : '')) + '">' + (res ? (res.status || res.statusText || 'ERR') : '') + '</span>' +
                 (res?.responseTime ? '<span style="font-size:8px;color:gray">' + res.responseTime + 'ms</span>' : '') +
               '</div>' +
             '</div>' +
             '<div class="details">' +
-              (res?.classification ? '<div class="err-box"><b style="color:var(--error)">' + res.classification.reason + '</b><br>👉 ' + res.classification.fix + '</div>' : '') +
-              '<div style="font-size:8px;color:gray;margin-bottom:4px">Target: ' + (res?.fullUrl || '--') + '</div>' +
+              (res?.classification ? '<div class="err-box"><div style="margin-bottom:4px; font-weight:bold; color:var(--error); font-size:11px">' + res.classification.reason + '</div><div style="font-size:10px; line-height:1.4">👉 ' + res.classification.fix + '</div></div>' : '') +
+              '<div style="font-size:8px;color:gray;margin-bottom:4px;opacity:0.6">Endpoint Target: ' + (res?.fullUrl || '--') + '</div>' +
+              '<div style="margin-top:8px; font-weight:bold; font-size:9px; color:var(--text-dim); text-transform:uppercase">Server Response</div>' +
               '<pre>' + JSON.stringify(res?.responseData || {}, null, 2) + '</pre>' +
-              (res?.ai ? '<div style="background:rgba(99,102,241,0.1);padding:8px;border-radius:4px;margin-top:8px"><b>AI INSIGHT</b><br>' + res.ai.why + '<br><i>' + res.ai.fix + '</i></div>' : '') +
+              (res?.ai ? '<div style="background:rgba(99,102,241,0.15); border: 1px solid var(--accent); padding:10px; border-radius:6px; margin-top:12px"><b>🧠 AI DIAGNOSIS</b><br>' + res.ai.why + '<br><i style="display:block; margin-top:4px; color:var(--highlight)">' + res.ai.fix + '</i></div>' : '') +
             '</div>' +
           '</div>';
         });
