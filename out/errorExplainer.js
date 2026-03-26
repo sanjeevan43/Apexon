@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.generateRequestBodyWithAI = generateRequestBodyWithAI;
 exports.explainWithAI = explainWithAI;
 exports.autoExpandUrlWithAI = autoExpandUrlWithAI;
+exports.generateOpenAPISpecWithAI = generateOpenAPISpecWithAI;
 const axios_1 = __importDefault(require("axios"));
 /**
  * Uses AI to generate a realistic JSON body for a given endpoint.
@@ -129,6 +130,40 @@ async function autoExpandUrlWithAI(path, method, apiKey, sourceFile) {
     }
     catch {
         return path.replace(/\{[^}]+\}/g, '1').replace(/:[a-zA-Z0-9_]+/g, '1');
+    }
+}
+/**
+ * Uses AI to generate a complete OpenAPI JSON spec from the scanned endpoints and source context.
+ */
+async function generateOpenAPISpecWithAI(endpoints, apiKey) {
+    if (!apiKey)
+        return null;
+    const prompt = `
+    You are an API Architect. Based on these discovered raw endpoints, generate a valid, comprehensive OpenAPI 3.0.0 JSON specification.
+    
+    Raw Endpoints:
+    ${JSON.stringify(endpoints.slice(0, 50))} // Limit to 50 for token safety
+
+    Requirements:
+    1. Infer summary and description for each endpoint.
+    2. Suggest realistic request bodies (JSON) and response schemas (200).
+    3. Include security definitions (Bearer Auth).
+    4. Return ONLY the JSON object.
+  `;
+    try {
+        const res = await axios_1.default.post('https://api.openai.com/v1/chat/completions', {
+            model: 'gpt-4o-mini',
+            messages: [{ role: 'user', content: prompt }],
+            response_format: { type: 'json_object' }
+        }, {
+            headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+            timeout: 25000
+        });
+        return JSON.parse(res.data.choices[0].message.content);
+    }
+    catch (err) {
+        console.error('AI OpenAPI Gen failed:', err.message);
+        return null;
     }
 }
 //# sourceMappingURL=errorExplainer.js.map

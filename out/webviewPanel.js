@@ -103,7 +103,55 @@ class ApexonDashboard {
             case 'autoDiscover':
                 await this.doAutoDiscover();
                 break;
+            case 'stop':
+                await this.doStop();
+                break;
         }
+    }
+    async doStop() {
+        this.post({ command: 'status', text: '🛑 STOPPING...', active: false });
+        // This will kill any current doRun loop if it checks for a cancellation token, 
+        // but for now we'll just show it's stopped and kill the server if needed.
+        const { killServer } = require('./serverManager');
+        killServer();
+    }
+    async doSwaggerPilot(baseURL, apiKey) {
+        this.post({ command: 'status', text: '🤖 GENERATING AI SWAGGER SPEC...' });
+        // 1. Get raw endpoints needed for the spec
+        const raw = await (0, scanner_1.scanWorkspace)(baseURL);
+        if (raw.length === 0)
+            return this.post({ command: 'error', text: 'No code structure found to generate spec.' });
+        // 2. Generate OpenAPI Spec via AI
+        const spec = await (0, errorExplainer_1.generateOpenAPISpecWithAI)(raw, apiKey);
+        if (!spec)
+            return this.post({ command: 'error', text: 'AI failed to generate Swagger JSON.' });
+        this.post({ command: 'status', text: 'Spec Ready. Re-scanning with AI Context...' });
+        // 3. Process the spec manually (mocking scanSwagger effect)
+        const swEndpoints = [];
+        if (spec.paths) {
+            Object.keys(spec.paths).forEach(path => {
+                Object.keys(spec.paths[path]).forEach(method => {
+                    swEndpoints.push({
+                        method: method.toUpperCase(),
+                        path: path,
+                        file: 'AI-Generated-Spec.json',
+                        isSwagger: true
+                    });
+                });
+            });
+        }
+        this.endpoints = swEndpoints;
+        this.post({ command: 'scanResult', endpoints: this.endpoints });
+        // 4. Run the rest of the flow
+        if (this.endpoints.length > 0) {
+            const allIndices = this.endpoints.map((_, i) => i);
+            const results = await this.doRun(baseURL, apiKey, allIndices);
+            if (results && results.length > 0) {
+                this.post({ command: 'status', text: 'Generating Report...' });
+                await this.doExport(results);
+            }
+        }
+        this.post({ command: 'status', text: 'AI Swagger Workflow Done', active: false });
     }
     async doAutoDiscover() {
         this.post({ command: 'status', text: 'Auto-Discovering Environment...' });
@@ -201,12 +249,13 @@ class ApexonDashboard {
     }
     classifyError(status) {
         switch (status) {
-            case 400: return { reason: 'Bad Request', fix: 'Check payload' };
-            case 401: return { reason: 'Unauthorized', fix: 'Invalid Key' };
-            case 403: return { reason: 'Forbidden', fix: 'Check permissions' };
-            case 404: return { reason: 'Not Found', fix: 'Target path missing' };
-            case 500: return { reason: 'Server Error', fix: 'Backend crashed' };
-            default: return { reason: 'HTTP ' + status, fix: 'Check body' };
+            case 400: return { reason: 'Bad Request', fix: 'Payload structure invalid' };
+            case 401: return { reason: 'Unauthorized', fix: 'Invalid API key or token' };
+            case 403: return { reason: 'Forbidden', fix: 'Insufficient permissions' };
+            case 404: return { reason: 'Not Found', fix: 'Wrong endpoint or path' };
+            case 500: return { reason: 'Server Error', fix: 'Internal server issue' };
+            case 503: return { reason: 'Service Unavailable', fix: 'Server overloaded or down' };
+            default: return { reason: 'HTTP ' + status, fix: 'Check request body and headers' };
         }
     }
     async doRun(baseURL, apiKey, indices) {
@@ -311,17 +360,23 @@ class ApexonDashboard {
 </style>
 </head>
 <body>
-  <div class="logo">APEXON <span style="font-size:8px;opacity:0.6">v0.4.1</span></div>
+  <div class="logo">APEXON <span style="font-size:8px;opacity:0.6">v0.4.3</span></div>
+  <div style="font-size: 8px; color: var(--text-dim); margin-bottom: 12px; display: flex; gap: 10px;">
+    <span>🔍 Auto-Discovery</span>
+    <span>🧪 Smart Test Cases</span>
+    <span>🧠 AI Explainer</span>
+  </div>
   <div class="stages">
     <div id="stg-1" class="stage active"><span class="stage-lbl">DISCOVER</span></div>
     <div id="stg-2" class="stage"><span class="stage-lbl">PREPARE</span></div>
     <div id="stg-3" class="stage"><span class="stage-lbl">EXECUTE</span></div>
     <div id="stg-4" class="stage"><span class="stage-lbl">REPORT</span></div>
   </div>
-  <div class="config-box">
+  
+  <div class="config-box" style="padding:10px; opacity:0.6">
     <div class="grid-2">
-      <div class="input-grp"><label>Base URL *</label><input id="url-in" type="text" placeholder="http://localhost:8080"></div>
-      <div class="input-grp"><label>API Key *</label><input id="key-in" type="password" placeholder="sk-..."></div>
+      <div class="input-grp"><label>Base URL</label><input id="url-in" type="text" placeholder="Auto-Fill..."></div>
+      <div class="input-grp"><label>API Key</label><input id="key-in" type="password" placeholder="sk-..."></div>
     </div>
   </div>
   <div class="summary">
@@ -331,13 +386,11 @@ class ApexonDashboard {
     <div class="stat"><b id="s-avg">0</b><span>ms Avg</span></div>
   </div>
   <div class="controls">
-    <button id="auto-btn">🚀 RUN FULL PIPELINE (Auto-Discover + Test + Report)</button>
-    <div style="display:flex; gap:8px">
-      <button id="discover-btn" style="flex:1; background:#0f172a; border: 1px solid var(--accent)">Auto-Fill Config</button>
-      <button id="scan-btn" style="flex:1">Discover API</button>
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px">
+      <button id="scan-btn" style="background:var(--card); border:1px solid var(--accent); color:var(--accent)">1. SCAN</button>
+      <button id="auto-btn" style="background:var(--accent); color:#fff">2. TEST ALL</button>
     </div>
-    <button id="run-btn">Execute Selection</button>
-    <button id="export-btn">⬇️ EXPORT JSON REPORT</button>
+    <button id="stop-btn" style="background:#ef4444; color:#fff; margin-top:8px; opacity:0.8">STOP</button>
   </div>
   <div class="list" id="list"></div>
   <div id="status-bar">Ready</div>
@@ -361,12 +414,13 @@ class ApexonDashboard {
       vscode.postMessage({ command: 'autoPilot', baseURL: urlIn.value, apiKey: keyIn.value });
     });
 
-    document.getElementById('discover-btn').addEventListener('click', function() {
+    document.getElementById('scan-btn').addEventListener('click', function() {
       vscode.postMessage({ command: 'autoDiscover' });
     });
 
-    document.getElementById('scan-btn').addEventListener('click', function() {
-      vscode.postMessage({ command: 'scan', baseURL: urlIn.value });
+    document.getElementById('stop-btn').addEventListener('click', function() {
+      window.location.reload(); // Quick reset
+      vscode.postMessage({ command: 'stop' });
     });
 
     document.getElementById('run-btn').addEventListener('click', function() {

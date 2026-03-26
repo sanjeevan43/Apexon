@@ -2,7 +2,7 @@
   "name": "apexon",
   "displayName": "Apexon",
   "description": "Detect, run, and validate API endpoints in your workspace",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "publisher": "sanjeevan43",
   "repository": {
     "type": "git",
