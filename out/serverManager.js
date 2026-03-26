@@ -67,30 +67,32 @@ async function isServerUp(baseURL) {
         }
     }
 }
-/** Ensures the server is running. Spawns it if necessary and polls health. */
+/** Ensures the server is running. Spawns it if necessary. */
 async function ensureServerRunning(baseURL, framework) {
-    // Return early if server is already reachable
+    // Check if ALREADY up - Be quiet here
     if (await isServerUp(baseURL))
         return null;
     const startArgs = START_COMMANDS[framework];
     if (!startArgs) {
-        return `Server not running and framework "${framework}" has no known start command. Please start it manually.`;
+        return `Server at ${baseURL} is not responding. Start your ${framework} server manually.`;
     }
     const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
-    // Non-interactive spawn to allow terminal-based log viewing if needed
+    // Spawning the server process
     serverProcess = cp.spawn(startArgs[0], startArgs[1], {
         cwd: root,
         shell: true,
-        stdio: 'ignore', // Avoid cluttering the VS Code console
+        stdio: 'ignore', // Avoid cluttering the console
     });
-    // Polling every 500ms, timeout @ 10 seconds
-    const deadline = Date.now() + 10000;
+    // Wait for it to wake up
+    const deadline = Date.now() + 15000;
     while (Date.now() < deadline) {
-        await new Promise(r => setTimeout(r, 500));
-        if (await isServerUp(baseURL))
+        await new Promise(r => setTimeout(r, 1500)); // Polled check every 1.5s
+        if (await isServerUp(baseURL)) {
+            await new Promise(r => setTimeout(r, 500)); // Extra puffert-delay for real-world readiness
             return null;
+        }
     }
-    return `Server did not respond within 10 seconds. Check that "${startArgs[0]} ${startArgs[1].join(' ')}" starts correctly.`;
+    return `Timed out waiting for server @ ${baseURL}. Check start logs.`;
 }
 /** Terminates the spawned server process if it exists */
 function killServer() {

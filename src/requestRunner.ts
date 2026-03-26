@@ -7,15 +7,17 @@ export interface TestResult {
   statusText: string;
   durationMs: number;
   passed: boolean;
-  errorCode: string | null; // e.g., 'TIMEOUT' | 'NETWORK'
+  errorCode: string | null;
+  requestBody: any;
+  responseData: any;
+  fullUrl: string; // NEW: For debugging
 }
-
-const SAMPLE_BODY = { name: 'test', value: 'sample' };
 
 /** Normalize path with placeholder values (e.g., :id -> 1) */
 function normalizePath(p: string): string {
   return p
     .replace(/\{userId\}/g, '1')
+    .replace(/\{id\}/g, '1')
     .replace(/\{slug\}/g, 'test')
     .replace(/\{[^}]+\}/g, '1')   // Any remaining {param}
     .replace(/:([a-zA-Z_][a-zA-Z0-9_]*)/g, '1'); // :param style
@@ -25,15 +27,21 @@ function normalizePath(p: string): string {
 export async function runRequest(
   endpoint: Endpoint,
   baseURL: string,
-  apiKey: string,
-  timeoutMs: number
+  timeoutMs: number,
+  requestBody?: any,
+  overriddenPath?: string,
+  extraHeaders?: Record<string, string> // NEW
 ): Promise<TestResult> {
-  const url = baseURL.replace(/\/$/, '') + normalizePath(endpoint.path);
+  const path = overriddenPath || normalizePath(endpoint.path);
+  const url = baseURL.replace(/\/$/, '') + (path.startsWith('/') ? path : '/' + path);
+  
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+    'Accept': 'application/json',
+    ...extraHeaders // Merge user-provided headers
   };
-  const needsBody = ['POST', 'PUT', 'PATCH'].includes(endpoint.method);
+  
+  const actualBody = requestBody || (['POST', 'PUT', 'PATCH'].includes(endpoint.method) ? { id: 1 } : null);
 
   const start = Date.now();
   try {
@@ -41,24 +49,23 @@ export async function runRequest(
       method: endpoint.method.toLowerCase(),
       url,
       headers,
-      data: needsBody ? SAMPLE_BODY : undefined,
+      data: actualBody,
       timeout: timeoutMs,
-      validateStatus: () => true, // Ensure we get back the status for validation
+      validateStatus: () => true,
     });
 
-    const durationMs = Date.now() - start;
-    const passed = response.status >= 200 && response.status <= 299;
-    
     return {
       endpoint,
       status: response.status,
       statusText: response.statusText || String(response.status),
-      durationMs,
-      passed,
+      durationMs: Date.now() - start,
+      passed: response.status >= 200 && response.status <= 299,
       errorCode: null,
+      requestBody: actualBody,
+      responseData: response.data,
+      fullUrl: url, // Store full URL
     };
   } catch (err) {
-    const durationMs = Date.now() - start;
     const axiosErr = err as AxiosError;
     const errorCode = axiosErr.code === 'ECONNABORTED' ? 'TIMEOUT' : 'NETWORK';
 
@@ -66,9 +73,12 @@ export async function runRequest(
       endpoint,
       status: null,
       statusText: errorCode,
-      durationMs,
+      durationMs: Date.now() - start,
       passed: false,
       errorCode,
+      requestBody: actualBody,
+      responseData: axiosErr.response?.data || null,
+      fullUrl: url,
     };
   }
 }

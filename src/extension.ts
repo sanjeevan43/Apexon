@@ -1,24 +1,26 @@
 import * as vscode from 'vscode';
-import { ApiTesterPanel } from './webviewPanel';
-
-let panel: ApiTesterPanel | undefined;
+import { ApexonDashboard } from './webviewPanel';
 
 export function activate(context: vscode.ExtensionContext) {
-  // Command to open the API testing dashboard
+  // Create the singleton instance of the dashboard engine
+  const dashboard = new ApexonDashboard(context.extensionUri);
+
+  // Register the Sidebar View provider
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(
+      'apexon.dashboard', // Matches package.json view ID
+      dashboard
+    )
+  );
+
+  // Register command to force-open a full panel if needed
   context.subscriptions.push(
     vscode.commands.registerCommand('apexon.openPanel', () => {
-      // Reuse existing panel if active, otherwise create new
-      if (panel) {
-        panel.reveal();
-      } else {
-        panel = new ApiTesterPanel(context);
-        panel.onDispose(() => { panel = undefined; });
-      }
+      dashboard.createOrShowFullPanel();
     })
   );
 }
 
 export function deactivate() {
-  // Graceful cleanup: stop server and kill panel
-  panel?.dispose();
+  // Graceful cleanup happens internally or via VS Code lifecycle
 }

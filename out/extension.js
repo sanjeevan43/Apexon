@@ -37,22 +37,18 @@ exports.activate = activate;
 exports.deactivate = deactivate;
 const vscode = __importStar(require("vscode"));
 const webviewPanel_1 = require("./webviewPanel");
-let panel;
 function activate(context) {
-    // Command to open the API testing dashboard
+    // Create the singleton instance of the dashboard engine
+    const dashboard = new webviewPanel_1.ApexonDashboard(context.extensionUri);
+    // Register the Sidebar View provider
+    context.subscriptions.push(vscode.window.registerWebviewViewProvider('apexon.dashboard', // Matches package.json view ID
+    dashboard));
+    // Register command to force-open a full panel if needed
     context.subscriptions.push(vscode.commands.registerCommand('apexon.openPanel', () => {
-        // Reuse existing panel if active, otherwise create new
-        if (panel) {
-            panel.reveal();
-        }
-        else {
-            panel = new webviewPanel_1.ApiTesterPanel(context);
-            panel.onDispose(() => { panel = undefined; });
-        }
+        dashboard.createOrShowFullPanel();
     }));
 }
 function deactivate() {
-    // Graceful cleanup: stop server and kill panel
-    panel?.dispose();
+    // Graceful cleanup happens internally or via VS Code lifecycle
 }
 //# sourceMappingURL=extension.js.map

@@ -5,55 +5,61 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.runRequest = runRequest;
 const axios_1 = __importDefault(require("axios"));
-const SAMPLE_BODY = { name: 'test', value: 'sample' };
 /** Normalize path with placeholder values (e.g., :id -> 1) */
 function normalizePath(p) {
     return p
         .replace(/\{userId\}/g, '1')
+        .replace(/\{id\}/g, '1')
         .replace(/\{slug\}/g, 'test')
         .replace(/\{[^}]+\}/g, '1') // Any remaining {param}
         .replace(/:([a-zA-Z_][a-zA-Z0-9_]*)/g, '1'); // :param style
 }
 /** Executes a single request and measures performance */
-async function runRequest(endpoint, baseURL, apiKey, timeoutMs) {
-    const url = baseURL.replace(/\/$/, '') + normalizePath(endpoint.path);
+async function runRequest(endpoint, baseURL, timeoutMs, requestBody, overriddenPath, extraHeaders // NEW
+) {
+    const path = overriddenPath || normalizePath(endpoint.path);
+    const url = baseURL.replace(/\/$/, '') + (path.startsWith('/') ? path : '/' + path);
     const headers = {
         'Content-Type': 'application/json',
-        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        'Accept': 'application/json',
+        ...extraHeaders // Merge user-provided headers
     };
-    const needsBody = ['POST', 'PUT', 'PATCH'].includes(endpoint.method);
+    const actualBody = requestBody || (['POST', 'PUT', 'PATCH'].includes(endpoint.method) ? { id: 1 } : null);
     const start = Date.now();
     try {
         const response = await axios_1.default.request({
             method: endpoint.method.toLowerCase(),
             url,
             headers,
-            data: needsBody ? SAMPLE_BODY : undefined,
+            data: actualBody,
             timeout: timeoutMs,
-            validateStatus: () => true, // Ensure we get back the status for validation
+            validateStatus: () => true,
         });
-        const durationMs = Date.now() - start;
-        const passed = response.status >= 200 && response.status <= 299;
         return {
             endpoint,
             status: response.status,
             statusText: response.statusText || String(response.status),
-            durationMs,
-            passed,
+            durationMs: Date.now() - start,
+            passed: response.status >= 200 && response.status <= 299,
             errorCode: null,
+            requestBody: actualBody,
+            responseData: response.data,
+            fullUrl: url, // Store full URL
         };
     }
     catch (err) {
-        const durationMs = Date.now() - start;
         const axiosErr = err;
         const errorCode = axiosErr.code === 'ECONNABORTED' ? 'TIMEOUT' : 'NETWORK';
         return {
             endpoint,
             status: null,
             statusText: errorCode,
-            durationMs,
+            durationMs: Date.now() - start,
             passed: false,
             errorCode,
+            requestBody: actualBody,
+            responseData: axiosErr.response?.data || null,
+            fullUrl: url,
         };
     }
 }

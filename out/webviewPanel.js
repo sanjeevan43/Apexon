@@ -33,360 +33,354 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ApiTesterPanel = void 0;
+exports.ApexonDashboard = void 0;
 const vscode = __importStar(require("vscode"));
 const scanner_1 = require("./scanner");
 const frameworkDetector_1 = require("./frameworkDetector");
 const serverManager_1 = require("./serverManager");
 const requestRunner_1 = require("./requestRunner");
 const errorExplainer_1 = require("./errorExplainer");
-/** Accesses user configuration with a safe fallback */
 function getConfig(key) {
     return vscode.workspace.getConfiguration('apexon').get(key);
 }
-class ApiTesterPanel {
-    constructor(context) {
+async function updateConfig(key, value) {
+    await vscode.workspace.getConfiguration('apexon').update(key, value, vscode.ConfigurationTarget.Global);
+}
+class ApexonDashboard {
+    constructor(extensionUri) {
+        this.extensionUri = extensionUri;
         this.endpoints = [];
-        this.panel = vscode.window.createWebviewPanel('apexon', 'Apexon Dashboard', vscode.ViewColumn.One, {
-            enableScripts: true,
-            retainContextWhenHidden: true,
-        });
-        this.panel.webview.html = this.getHtml();
-        this.panel.webview.onDidReceiveMessage((msg) => this.handleMessage(msg), undefined, context.subscriptions);
-        this.panel.onDidDispose(() => {
-            (0, serverManager_1.killServer)();
-            this.disposeCallback?.();
-        }, null, context.subscriptions);
     }
-    reveal() {
-        this.panel.reveal();
+    resolveWebviewView(webviewView) {
+        this._view = webviewView;
+        webviewView.webview.options = { enableScripts: true };
+        webviewView.webview.html = this.getHtml();
+        webviewView.webview.onDidReceiveMessage(m => this.handleMessage(m));
+        this.syncConfig();
+        this.doScan();
     }
-    onDispose(cb) {
-        this.disposeCallback = cb;
-    }
-    dispose() {
-        this.panel.dispose();
+    createOrShowFullPanel() {
+        if (this._panel) {
+            this._panel.reveal();
+            return;
+        }
+        this._panel = vscode.window.createWebviewPanel('apexonPanel', 'Apexon Pro Dashboard', vscode.ViewColumn.One, { enableScripts: true });
+        this._panel.webview.html = this.getHtml();
+        this._panel.webview.onDidReceiveMessage(m => this.handleMessage(m));
+        this._panel.onDidDispose(() => { this._panel = undefined; });
+        this.syncConfig();
     }
     post(msg) {
-        this.panel.webview.postMessage(msg);
+        this._view?.webview.postMessage(msg);
+        this._panel?.webview.postMessage(msg);
+    }
+    syncConfig() {
+        this.post({
+            command: 'updateConfig',
+            baseURL: getConfig('baseURL'),
+            apiKey: getConfig('apiKey')
+        });
     }
     async handleMessage(msg) {
         switch (msg.command) {
             case 'scan':
-                await this.doScan();
+                await this.doScan(msg.baseURL);
                 break;
             case 'run':
-                await this.doRun(this.endpoints);
+                await this.doRun(msg.baseURL, msg.apiKey, msg.indices);
                 break;
-            case 'runSingle': {
-                if (!this.endpoints.length) {
-                    this.post({ command: 'error', text: 'No endpoints detected. Please Scan first.' });
-                    return;
-                }
-                const items = this.endpoints.map((e, i) => ({
-                    label: `${e.method} ${e.path}`,
-                    index: i,
-                }));
-                const pick = await vscode.window.showQuickPick(items, { placeHolder: 'Pick an endpoint to test individually' });
-                if (pick)
-                    await this.doRun([this.endpoints[pick.index]]);
+            case 'autoPilot':
+                await this.doAutoPilot(msg.baseURL, msg.apiKey);
                 break;
-            }
+            case 'export':
+                await this.doExport(msg.results);
+                break;
+            case 'saveConfig':
+                await updateConfig('baseURL', msg.baseURL);
+                await updateConfig('apiKey', msg.apiKey);
+                break;
         }
     }
-    async doScan() {
-        this.post({ command: 'status', text: 'Scanning workspace…' });
-        this.endpoints = await (0, scanner_1.scanWorkspace)();
+    async doScan(baseURL) {
+        this.post({ command: 'status', text: 'PHASE 1: API Discovery...' });
+        this.endpoints = await (0, scanner_1.scanWorkspace)(baseURL);
+        if (this.endpoints.length === 0) {
+            this.post({ command: 'error', text: 'API structure not detected' });
+            return;
+        }
         const framework = await (0, frameworkDetector_1.detectFramework)();
-        this.post({
-            command: 'scanResult',
-            count: this.endpoints.length,
-            framework,
-        });
+        this.post({ command: 'scanResult', endpoints: this.endpoints, framework });
     }
-    async doRun(targets) {
-        if (!targets.length) {
-            this.post({ command: 'error', text: 'No endpoints to reach. Run Scan first.' });
-            return;
+    async doAutoPilot(baseURL, apiKey) {
+        await this.doScan(baseURL);
+        if (this.endpoints.length > 0) {
+            const allIndices = this.endpoints.map((_, i) => i);
+            await this.doRun(baseURL, apiKey, allIndices);
         }
-        const baseURL = getConfig('baseURL');
-        if (!baseURL) {
-            this.post({ command: 'error', text: 'apexon.baseURL is not configured.' });
-            return;
+    }
+    async doExport(results) {
+        if (!results || results.length === 0)
+            return vscode.window.showErrorMessage('No test results to export.');
+        const doc = await vscode.workspace.openTextDocument({
+            content: JSON.stringify(results, null, 2),
+            language: 'json'
+        });
+        await vscode.window.showTextDocument(doc);
+    }
+    classifyError(status) {
+        switch (status) {
+            case 400: return { reason: 'Bad Request', fix: 'Check payload' };
+            case 401: return { reason: 'Unauthorized', fix: 'Invalid Key' };
+            case 403: return { reason: 'Forbidden', fix: 'Check permissions' };
+            case 404: return { reason: 'Not Found', fix: 'Target path missing' };
+            case 500: return { reason: 'Server Error', fix: 'Backend crashed' };
+            default: return { reason: 'HTTP ' + status, fix: 'Check body' };
         }
-        const apiKey = getConfig('apiKey');
-        const timeout = getConfig('timeout') ?? 5000;
-        this.post({ command: 'status', text: 'Ensuring server is up…' });
+    }
+    async doRun(baseURL, apiKey, indices) {
+        if (!indices?.length)
+            return this.post({ command: 'error', text: 'No endpoints selected.' });
+        if (!baseURL)
+            return this.post({ command: 'error', text: 'Base URL missing.' });
+        if (!apiKey)
+            return this.post({ command: 'error', text: 'API Key missing.' });
+        this.post({ command: 'status', text: 'PHASE 2: Preparation...' });
         const framework = await (0, frameworkDetector_1.detectFramework)();
         const serverErr = await (0, serverManager_1.ensureServerRunning)(baseURL, framework);
-        if (serverErr) {
-            this.post({ command: 'error', text: serverErr });
-            return;
-        }
-        this.post({ command: 'status', text: `Executing ${targets.length} request(s)…` });
+        if (serverErr)
+            return this.post({ command: 'error', text: serverErr });
+        const headers = { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' };
         const results = [];
-        for (const ep of targets) {
-            const result = await (0, requestRunner_1.runRequest)(ep, baseURL, apiKey, timeout);
-            results.push(result);
-        }
-        const lines = [];
-        let passed = 0;
-        for (const r of results) {
-            const icon = r.passed ? '✔' : '✖';
-            const label = r.passed ? 'OK' : 'ERROR';
-            const statusStr = r.status !== null ? `${r.status} ${label}` : r.statusText;
-            lines.push(`${icon} ${r.endpoint.method.padEnd(5)} ${r.endpoint.path.padEnd(20)} ${statusStr.padEnd(12)} (${r.durationMs}ms)`);
-            if (!r.passed) {
-                lines.push(`  → Reason: ${(0, errorExplainer_1.explain)(r.status, r.errorCode)}`);
+        for (const idx of indices) {
+            const ep = this.endpoints[idx];
+            this.post({ command: 'status', text: `AI Thinking: ${ep.path}...` });
+            const smartPath = await (0, errorExplainer_1.autoExpandUrlWithAI)(ep.path, ep.method, apiKey, ep.file);
+            let body = null;
+            if (['POST', 'PUT', 'PATCH'].includes(ep.method)) {
+                body = await (0, errorExplainer_1.generateRequestBodyWithAI)(ep.path, ep.method, apiKey, ep.file);
             }
-            else {
-                passed++;
+            this.post({ command: 'status', text: `Executing: ${ep.method} ${smartPath}...` });
+            const res = await (0, requestRunner_1.runRequest)(ep, baseURL, 5000, body, smartPath, headers);
+            res.passed = res.status === 200 || res.status === 201;
+            let ai;
+            let classification = null;
+            if (!res.passed) {
+                classification = this.classifyError(res.status ?? 0);
+                if (apiKey) {
+                    ai = await (0, errorExplainer_1.explainWithAI)(smartPath, ep.method, res.requestBody, res.responseData, res.status, apiKey);
+                    if (res.status === 404 && ai?.newPath && ai.newPath !== smartPath) {
+                        this.post({ command: 'status', text: `Self-Healing 404...` });
+                        const retryRes = await (0, requestRunner_1.runRequest)(ep, baseURL, 5000, body, ai.newPath, headers);
+                        if (retryRes.status === 200 || retryRes.status === 201) {
+                            results[idx] = { ...retryRes, passed: true, ai: { ...ai, why: 'Fixed prefix automatically', fix: 'Healed' } };
+                            this.post({ command: 'partialResult', results });
+                            continue;
+                        }
+                    }
+                }
             }
+            results[idx] = { ...res, ai, classification };
+            this.post({ command: 'partialResult', results });
         }
-        lines.push('');
-        lines.push('Summary:');
-        lines.push(`Total: ${results.length} | Passed: ${passed} | Failed: ${results.length - passed}`);
-        this.post({ command: 'results', lines });
+        this.post({ command: 'status', text: 'Done', active: false });
     }
     getHtml() {
         return /* html */ `<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
 <style>
   :root {
-    --bg-main: #0a0b10;
-    --accent: #4f46e5;
-    --accent-hover: #6366f1;
-    --text-primary: #f8fafc;
-    --text-secondary: #94a3b8;
-    --card-bg: rgba(30, 41, 59, 0.4);
-    --border: rgba(255, 255, 255, 0.1);
-    --success: #10b981;
-    --error: #ef4444;
-    --warning: #f59e0b;
+    --bg: #0f172a; --card: #1e293b; --accent: #6366f1; --highlight: #818cf8; --text: #f8fafc;
+    --text-dim: #94a3b8; --success: #10b981; --error: #ef4444; --border: rgba(255,255,255,0.08);
   }
-
-  body {
-    background-color: var(--bg-main);
-    color: var(--text-primary);
-    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-    margin: 0;
-    padding: 24px;
-    display: flex;
-    flex-direction: column;
-    gap: 24px;
-    min-height: 100vh;
-  }
-
-  .glass {
-    background: var(--card-bg);
-    backdrop-filter: blur(12px);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-  }
-
-  header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 20px;
-  }
-
-  .branding {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-  }
-
-  .branding h1 {
-    margin: 0;
-    font-size: 20px;
-    font-weight: 700;
-    background: linear-gradient(135deg, #818cf8 0%, #c084fc 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    letter-spacing: -0.5px;
-  }
-
-  .controls {
-    display: flex;
-    gap: 10px;
-  }
-
-  button {
-    background: var(--accent);
-    color: white;
-    border: none;
-    padding: 8px 16px;
-    border-radius: 8px;
-    font-weight: 600;
-    font-size: 13px;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-
-  button:hover {
-    background: var(--accent-hover);
-    transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(79, 70, 229, 0.3);
-  }
-
-  button:active {
-    transform: translateY(0);
-  }
-
-  .status-line {
-    padding: 12px 20px;
-    font-size: 13px;
-    color: var(--text-secondary);
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .pulse {
-    width: 8px;
-    height: 8px;
-    background: var(--accent);
-    border-radius: 50%;
-    animation: pulse 2s infinite;
-  }
-
-  @keyframes pulse {
-    0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(79, 70, 229, 0.7); }
-    70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(79, 70, 229, 0); }
-    100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(79, 70, 229, 0); }
-  }
-
-  main {
-    flex: 1;
-    overflow: auto;
-    padding: 20px;
-  }
-
-  .output-container {
-    font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
-    font-size: 13px;
-    line-height: 1.6;
-    white-space: pre-wrap;
-  }
-
-  .line-success { color: var(--success); }
-  .line-error { color: var(--error); }
-  .line-reason { color: var(--warning); opacity: 0.9; }
-  .line-summary { 
-    color: var(--text-primary); 
-    font-weight: bold; 
-    border-top: 1px solid var(--border);
-    margin-top: 12px;
-    padding-top: 12px;
-  }
-
-  .empty-state {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    height: 100%;
-    color: var(--text-secondary);
-    text-align: center;
-    gap: 12px;
-  }
-
-  .empty-state svg {
-    width: 48px;
-    height: 48px;
-    opacity: 0.2;
-  }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, sans-serif; padding: 15px; font-size: 11px; margin: 0; }
+  .logo { font-weight: 800; font-size: 14px; letter-spacing: 2px; color: var(--highlight); margin-bottom: 20px; text-transform: uppercase; }
+  .stages { display: flex; gap: 4px; margin-bottom: 20px; }
+  .stage { flex: 1; height: 3px; background: rgba(255,255,255,0.1); border-radius: 2px; position: relative; }
+  .stage.active { background: var(--accent); }
+  .stage-lbl { position: absolute; top: 6px; font-size: 7px; font-weight: bold; color: var(--text-dim); }
+  .config-box { background: var(--card); padding: 15px; border-radius: 8px; border: 1px solid var(--border); margin-bottom: 20px; }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .input-grp { display: flex; flex-direction: column; gap: 4px; }
+  label { font-size: 9px; text-transform: uppercase; color: var(--text-dim); font-weight: 800; }
+  input { background: #000; border: 1px solid var(--border); color: #fff; padding: 8px 10px; border-radius: 4px; font-family: monospace; font-size: 11px; width: 100%; box-sizing: border-box; }
+  .summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 15px; }
+  .stat { background: var(--card); border: 1px solid var(--border); padding: 8px; border-radius: 6px; text-align: center; }
+  .stat b { display: block; font-size: 14px; }
+  .stat span { font-size: 7px; color: var(--text-dim); text-transform: uppercase; }
+  .controls { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; }
+  button { width: 100%; border: none; padding: 10px; border-radius: 6px; font-weight: 800; cursor: pointer; font-size: 11px; }
+  #auto-btn { background: linear-gradient(90deg, #6366f1, #c084fc); color: #fff; }
+  #run-btn { background: var(--accent); color: #fff; }
+  #scan-btn { background: #334155; color: #fff; }
+  #export-btn { background: transparent; border: 1px solid var(--accent); color: var(--accent); margin-top: 5px; }
+  .list { display: flex; flex-direction: column; gap: 6px; }
+  .group-header { padding: 4px 10px; color: var(--highlight); font-weight: bold; font-size: 9px; margin-top: 10px; opacity: 0.7; }
+  .item { background: var(--card); border: 1px solid var(--border); border-radius: 5px; overflow: hidden; }
+  .item-head { padding: 8px 12px; cursor: pointer; display: flex; align-items: center; gap: 10px; }
+  .method { font-weight: bold; font-size: 8px; min-width: 45px; text-align: center; padding: 3px; color: #fff; background: #475569; border-radius: 3px; }
+  .path { font-family: monospace; flex: 1; font-size: 11px; }
+  .tag { font-weight: bold; font-size: 10px; margin-left: auto; }
+  .passed { color: var(--success); } .failed { color: var(--error); }
+  .details { padding: 10px; border-top: 1px solid var(--border); background: rgba(0,0,0,0.15); display: none; }
+  .open .details { display: block; }
+  pre { background: #000; padding: 8px; border-radius: 4px; font-size: 9px; overflow-x: auto; border: 1px solid rgba(255,255,255,0.05); }
+  .err-box { background: rgba(239, 68, 68, 0.1); border-left: 3px solid var(--error); padding: 8px; font-size: 9px; margin-bottom: 5px; }
+  #status-bar { position: fixed; bottom:0; left:0; right:0; background: var(--accent); color:#fff; padding: 4px 12px; font-size: 9px; font-weight: 800; z-index: 1000; display: none; }
 </style>
 </head>
 <body>
-  <header class="glass">
-    <div class="branding">
-      <h1>APEXON</h1>
-    </div>
-    <div class="controls">
-      <button id="btnScan">
-        <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-        Scan
-      </button>
-      <button id="btnRun">
-        <svg width="14" height="14" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-        Run All
-      </button>
-      <button id="btnRunSingle">
-        <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 2v20m10-10H2"/></svg>
-        Targeted
-      </button>
-    </div>
-  </header>
-
-  <div id="status" class="status-line glass" style="display: none;">
-    <div class="pulse"></div>
-    <span id="statusText">Ready to scan...</span>
+  <div class="logo">APEXON <span style="font-size:8px;opacity:0.6">v0.4.1</span></div>
+  <div class="stages">
+    <div id="stg-1" class="stage active"><span class="stage-lbl">DISCOVER</span></div>
+    <div id="stg-2" class="stage"><span class="stage-lbl">PREPARE</span></div>
+    <div id="stg-3" class="stage"><span class="stage-lbl">EXECUTE</span></div>
+    <div id="stg-4" class="stage"><span class="stage-lbl">REPORT</span></div>
   </div>
-
-  <main class="glass">
-    <div id="output" class="output-container">
-      <div class="empty-state">
-        <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z"/></svg>
-        <p>No endpoints detected yet.<br>Click <b>Scan</b> to analyze your workspace.</p>
-      </div>
+  <div class="config-box">
+    <div class="grid-2">
+      <div class="input-grp"><label>Base URL *</label><input id="url-in" type="text" placeholder="http://localhost:8080"></div>
+      <div class="input-grp"><label>API Key *</label><input id="key-in" type="password" placeholder="sk-..."></div>
     </div>
-  </main>
-
+  </div>
+  <div class="summary">
+    <div class="stat"><b id="s-total">0</b><span>Selected</span></div>
+    <div class="stat"><b id="s-passed" style="color:var(--success)">0</b><span>Passed</span></div>
+    <div class="stat"><b id="s-failed" style="color:var(--error)">0</b><span>Failed</span></div>
+    <div class="stat"><b id="s-avg">0</b><span>ms Avg</span></div>
+  </div>
+  <div class="controls">
+    <button id="auto-btn">✨ RUN COMPLETE WORKFLOW</button>
+    <div style="display:flex; gap:8px"><button id="scan-btn" style="flex:1">Discover</button><button id="run-btn" style="flex:1">Execute</button></div>
+    <button id="export-btn">⬇️ EXPORT JSON REPORT</button>
+  </div>
+  <div class="list" id="list"></div>
+  <div id="status-bar">Ready</div>
 <script>
-  const vscode = acquireVsCodeApi();
-  const statusContainer = document.getElementById('status');
-  const statusText = document.getElementById('statusText');
-  const outputEl = document.getElementById('output');
+  (function() {
+    const vscode = acquireVsCodeApi();
+    const urlIn = document.getElementById('url-in');
+    const keyIn = document.getElementById('key-in');
+    const stBar = document.getElementById('status-bar');
+    const list = document.getElementById('list');
+    let endpoints = [];
+    let results = [];
 
-  document.getElementById('btnScan').onclick = () => vscode.postMessage({ command: 'scan' });
-  document.getElementById('btnRun').onclick = () => vscode.postMessage({ command: 'run' });
-  document.getElementById('btnRunSingle').onclick = () => vscode.postMessage({ command: 'runSingle' });
-
-  window.addEventListener('message', ({ data }) => {
-    switch (data.command) {
-      case 'status':
-        statusContainer.style.display = 'flex';
-        statusText.textContent = data.text;
-        break;
-      case 'error':
-        statusContainer.style.display = 'flex';
-        statusText.textContent = 'Operational fault detected';
-        outputEl.innerHTML = '<span class="line-error">✖ ' + esc(data.text) + '</span>';
-        break;
-      case 'scanResult':
-        statusContainer.style.display = 'flex';
-        statusText.textContent = 'Scan complete';
-        outputEl.innerHTML = '<div style="color: var(--text-secondary)">Found <b>' + data.count + '</b> endpoint(s) mapped via <b>' + data.framework + '</b> logic.</div>';
-        break;
-      case 'results':
-        statusContainer.style.display = 'flex';
-        statusText.textContent = 'Execution finished';
-        outputEl.innerHTML = data.lines.map(line => {
-          if (line.startsWith('✔')) return '<span class="line-success">' + esc(line) + '</span>';
-          if (line.startsWith('✖')) return '<span class="line-error">' + esc(line) + '</span>';
-          if (line.startsWith('  →')) return '<span class="line-reason">' + esc(line) + '</span>';
-          if (line.startsWith('Summary') || line.startsWith('Total')) return '<div class="line-summary">' + esc(line) + '</div>';
-          return esc(line);
-        }).join('<br>');
-        break;
+    function save() {
+      vscode.postMessage({ command: 'saveConfig', baseURL: urlIn.value, apiKey: keyIn.value });
     }
-  });
+    urlIn.addEventListener('change', save);
+    keyIn.addEventListener('change', save);
 
-  function esc(s) {
-    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  }
+    document.getElementById('auto-btn').addEventListener('click', function() {
+      save();
+      vscode.postMessage({ command: 'autoPilot', baseURL: urlIn.value, apiKey: keyIn.value });
+    });
+
+    document.getElementById('scan-btn').addEventListener('click', function() {
+      vscode.postMessage({ command: 'scan', baseURL: urlIn.value });
+    });
+
+    document.getElementById('run-btn').addEventListener('click', function() {
+      const idxs = [];
+      document.querySelectorAll('.chk:checked').forEach(c => idxs.push(parseInt(c.dataset.idx)));
+      vscode.postMessage({ command: 'run', baseURL: urlIn.value, apiKey: keyIn.value, indices: idxs });
+    });
+
+    document.getElementById('export-btn').addEventListener('click', function() {
+      vscode.postMessage({ command: 'export', results: results });
+    });
+
+    window.addEventListener('message', event => {
+      const data = event.data;
+      switch (data.command) {
+        case 'updateConfig':
+          urlIn.value = data.baseURL || '';
+          keyIn.value = data.apiKey || '';
+          break;
+        case 'status':
+          stBar.innerText = data.text;
+          stBar.style.display = data.active === false ? 'none' : 'block';
+          if (data.text.includes('Discovery')) setStage(1);
+          if (data.text.includes('Preparing')) setStage(2);
+          if (data.text.includes('Executing')) setStage(3);
+          break;
+        case 'scanResult':
+          endpoints = data.endpoints || [];
+          results = [];
+          setStage(1);
+          render();
+          break;
+        case 'partialResult':
+          results = data.results || [];
+          setStage(4);
+          render();
+          break;
+        case 'error':
+          alert(data.text);
+          break;
+      }
+    });
+
+    function setStage(idx) {
+      document.querySelectorAll('.stage').forEach((s, i) => s.classList.toggle('active', (i+1) <= idx));
+    }
+
+    function render() {
+      if (!endpoints || !endpoints.length) {
+        list.innerHTML = '<div style="text-align:center;padding:20px;color:gray">Discovery complete. Ready to execute.</div>';
+        return;
+      }
+      const grps = {};
+      let p=0, f=0, tt=0, count=0;
+      endpoints.forEach((ep, i) => {
+        const file = ep.file.split(/[\\\\/]/).pop() || 'Unknown';
+        if (!grps[file]) grps[file] = [];
+        grps[file].push({ep, i});
+      });
+
+      let html = '';
+      Object.keys(grps).forEach(fN => {
+        html += '<div class="group-header">' + fN + '</div>';
+        grps[fN].forEach(({ ep, i }) => {
+          const res = results[i];
+          if (res?.passed) p++; else if (res) f++;
+          if (res?.responseTime) { tt += res.responseTime; count++; }
+
+          html += '<div class="item" id="i-' + i + '">' +
+            '<div class="item-head">' +
+              '<input type="checkbox" class="chk" data-idx="' + i + '" checked onclick="event.stopPropagation(); updateSum()">' +
+              '<div style="flex:1; display:flex; align-items:center; gap:10px" onclick="document.getElementById(\\'i-' + i + '\\').classList.toggle(\\'open\\')">' +
+                '<span class="method">' + ep.method + '</span>' +
+                '<span class="path">' + ep.path + '</span>' +
+                '<span class="tag ' + (res?.passed ? 'passed' : (res ? 'failed' : '')) + '">' + (res ? (res.status || 'FAIL') : '') + '</span>' +
+                (res?.responseTime ? '<span style="font-size:8px;color:gray">' + res.responseTime + 'ms</span>' : '') +
+              '</div>' +
+            '</div>' +
+            '<div class="details">' +
+              (res?.classification ? '<div class="err-box"><b style="color:var(--error)">' + res.classification.reason + '</b><br>👉 ' + res.classification.fix + '</div>' : '') +
+              '<div style="font-size:8px;color:gray;margin-bottom:4px">Target: ' + (res?.fullUrl || '--') + '</div>' +
+              '<pre>' + JSON.stringify(res?.responseData || {}, null, 2) + '</pre>' +
+              (res?.ai ? '<div style="background:rgba(99,102,241,0.1);padding:8px;border-radius:4px;margin-top:8px"><b>AI INSIGHT</b><br>' + res.ai.why + '<br><i>' + res.ai.fix + '</i></div>' : '') +
+            '</div>' +
+          '</div>';
+        });
+      });
+      list.innerHTML = html;
+      document.getElementById('s-passed').innerText = p;
+      document.getElementById('s-failed').innerText = f;
+      document.getElementById('s-avg').innerText = count > 0 ? Math.round(tt/count) : 0;
+      updateSum();
+    }
+
+    window.updateSum = function() {
+      document.getElementById('s-total').innerText = document.querySelectorAll('.chk:checked').length;
+    };
+  })();
 </script>
 </body>
 </html>`;
     }
 }
-exports.ApiTesterPanel = ApiTesterPanel;
+exports.ApexonDashboard = ApexonDashboard;
 //# sourceMappingURL=webviewPanel.js.map

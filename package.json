@@ -2,7 +2,7 @@
   "name": "apexon",
   "displayName": "Apexon",
   "description": "Detect, run, and validate API endpoints in your workspace",
-  "version": "0.2.1",
+  "version": "0.3.9",
   "publisher": "sanjeevan43",
   "license": "MIT",
   "icon": "logo.png",
@@ -13,14 +13,32 @@
     "Testing"
   ],
   "activationEvents": [
-    "onCommand:apexon.openPanel"
+    "onView:apexon.dashboard"
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "apexon-explorer",
+          "title": "Apexon",
+          "icon": "logo.png"
+        }
+      ]
+    },
+    "views": {
+      "apexon-explorer": [
+        {
+          "type": "webview",
+          "id": "apexon.dashboard",
+          "name": "Testing Engine"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "apexon.openPanel",
-        "title": "Apexon: Open Panel"
+        "title": "Apexon: Show Full Dashboard"
       }
     ],
     "configuration": {
@@ -36,10 +54,15 @@
           "default": "",
           "description": "Bearer token for Authorization header"
         },
-        "apexon.timeout": {
-          "type": "number",
-          "default": 5000,
-          "description": "Request timeout in milliseconds"
+        "apexon.extraHeaders": {
+          "type": "string",
+          "default": "",
+          "description": "Custom global headers for API requests (Key: Value)"
+        },
+        "apexon.openapiSource": {
+          "type": "string",
+          "default": "",
+          "description": "Optional: Swagger/OpenAPI JSON URL or local path"
         }
       }
     }
