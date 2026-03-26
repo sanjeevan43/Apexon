@@ -429,9 +429,6 @@ class ApexonDashboard {
       vscode.postMessage({ command: 'run', baseURL: urlIn.value, apiKey: keyIn.value, indices: idxs });
     });
 
-    document.getElementById('export-btn').addEventListener('click', function() {
-      vscode.postMessage({ command: 'export', results: results });
-    });
 
     window.addEventListener('message', event => {
       const data = event.data;
