@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import axios from 'axios';
 
 export interface AIAnalysis {
@@ -25,10 +26,15 @@ export async function generateRequestBodyWithAI(
     Source File Context: ${sourceFile || 'unknown'}
 
     Requirements:
-    1. Infer fields from the path (e.g., /users likely needs 'username', 'email').
-    2. Use standard types (strings for names, numbers for amounts).
-    3. If it looks like an Auth endpoint, include 'username' and 'password'.
-    4. Return ONLY a single JSON object.
+    1. Infer fields from the path AND source code context.
+    2. Look for Pydantic models, TypeScript interfaces, or JSON schemas in the context.
+    3. Use standard types (strings for names, numbers for amounts).
+    4. If it looks like an Auth endpoint, include 'username' and 'password'.
+    5. Return ONLY a single JSON object.
+    6. Ensure all required fields for a 201 Created response are present.
+
+    Source Code Context:
+    ${sourceFile ? fs.readFileSync(sourceFile, 'utf8').substring(0, 2000) : 'None'}
 
     JSON Structure:
   `;
@@ -141,9 +147,13 @@ export async function autoExpandUrlWithAI(
     Context: ${sourceFile || 'unknown'}
 
     Requirements:
-    1. If there are path parameters like {id} or :id, replace them with '1' or a realistic value.
-    2. Add realistic query parameters if applicable (e.g., ?limit=10).
-    3. Return ONLY the relative path string starting with /.
+    1. If there are path parameters like {id} or :id, replace them with a realistic value.
+    2. If the context suggests UUIDs or specific string IDs, use them.
+    3. Add realistic query parameters if applicable (e.g., ?limit=10).
+    4. Return ONLY the relative path string starting with /.
+
+    Source Code Context:
+    ${sourceFile ? fs.readFileSync(sourceFile, 'utf8').substring(0, 1500) : 'None'}
   `;
 
   try {

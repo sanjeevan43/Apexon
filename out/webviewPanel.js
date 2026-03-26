@@ -277,32 +277,67 @@ class ApexonDashboard {
         }
         const headers = { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' };
         const results = [];
+        const idCache = {}; // Cache for discovered IDs
         for (const idx of indices) {
             const ep = this.endpoints[idx];
             this.post({ command: 'status', text: `AI Thinking: ${ep.path}...` });
-            const smartPath = await (0, errorExplainer_1.autoExpandUrlWithAI)(ep.path, ep.method, apiKey, ep.file);
+            // Use cached ID if path has a parameter
+            let currentPath = ep.path;
+            const paramMatch = currentPath.match(/\{([^}]*id[^}]*)\}|:([a-zA-Z]*id[a-zA-Z]*)/i);
+            if (paramMatch) {
+                const paramName = paramMatch[1] || paramMatch[2];
+                if (idCache[paramName]) {
+                    currentPath = currentPath.replace(paramMatch[0], idCache[paramName]);
+                }
+            }
+            const smartPath = await (0, errorExplainer_1.autoExpandUrlWithAI)(currentPath, ep.method, apiKey, ep.file);
             let body = null;
             if (['POST', 'PUT', 'PATCH'].includes(ep.method)) {
                 body = await (0, errorExplainer_1.generateRequestBodyWithAI)(ep.path, ep.method, apiKey, ep.file);
             }
             this.post({ command: 'status', text: `Executing: ${ep.method} ${smartPath}...` });
-            const res = await (0, requestRunner_1.runRequest)(ep, baseURL, 5000, body, smartPath, headers);
+            let res = await (0, requestRunner_1.runRequest)(ep, baseURL, 5000, body, smartPath, headers);
             res.passed = res.status === 200 || res.status === 201;
             let ai;
             let classification = null;
+            // --- SELF-HEALING LOGIC ---
             if (!res.passed) {
                 classification = this.classifyError(res.status ?? 0);
-                if (apiKey) {
+                // 1. Recover from 422 (Unprocessable Entity) using AI to fix body
+                if (res.status === 422 && apiKey) {
+                    this.post({ command: 'status', text: `Self-Healing 422 (Body Fix)...` });
+                    const fixAi = await (0, errorExplainer_1.explainWithAI)(smartPath, ep.method, body, res.responseData, 422, apiKey);
+                    const fixedBody = await (0, errorExplainer_1.generateRequestBodyWithAI)(ep.path, ep.method, apiKey, ep.file + "\nERROR CONTEXT: " + JSON.stringify(res.responseData));
+                    const retryRes = await (0, requestRunner_1.runRequest)(ep, baseURL, 5000, fixedBody, smartPath, headers);
+                    if (retryRes.status === 200 || retryRes.status === 201) {
+                        res = { ...retryRes, passed: true };
+                        ai = { ...fixAi, why: 'Fixed payload structure based on validation errors', fix: 'Healed' };
+                    }
+                }
+                // 2. Recover from 404 (Not Found) via Path Correction
+                if (res.status === 404 && apiKey) {
                     ai = await (0, errorExplainer_1.explainWithAI)(smartPath, ep.method, res.requestBody, res.responseData, res.status, apiKey);
-                    if (res.status === 404 && ai?.newPath && ai.newPath !== smartPath) {
+                    if (ai?.newPath && ai.newPath !== smartPath) {
                         this.post({ command: 'status', text: `Self-Healing 404...` });
                         const retryRes = await (0, requestRunner_1.runRequest)(ep, baseURL, 5000, body, ai.newPath, headers);
                         if (retryRes.status === 200 || retryRes.status === 201) {
-                            results[idx] = { ...retryRes, passed: true, ai: { ...ai, why: 'Fixed prefix automatically', fix: 'Healed' } };
-                            this.post({ command: 'partialResult', results });
-                            continue;
+                            res = { ...retryRes, passed: true };
+                            ai = { ...ai, why: 'Fixed prefix automatically', fix: 'Healed' };
                         }
                     }
+                }
+            }
+            else {
+                // Collect IDs from successful GET responses for future use
+                if (ep.method === 'GET' && Array.isArray(res.responseData)) {
+                    const first = res.responseData[0];
+                    if (first && first.id)
+                        idCache['id'] = first.id;
+                    if (first && first.uuid)
+                        idCache['uuid'] = first.uuid;
+                }
+                else if (ep.method === 'GET' && res.responseData && res.responseData.id) {
+                    idCache['id'] = res.responseData.id;
                 }
             }
             results[idx] = { ...res, ai, classification };

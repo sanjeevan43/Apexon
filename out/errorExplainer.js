@@ -1,4 +1,37 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -7,6 +40,7 @@ exports.generateRequestBodyWithAI = generateRequestBodyWithAI;
 exports.explainWithAI = explainWithAI;
 exports.autoExpandUrlWithAI = autoExpandUrlWithAI;
 exports.generateOpenAPISpecWithAI = generateOpenAPISpecWithAI;
+const fs = __importStar(require("fs"));
 const axios_1 = __importDefault(require("axios"));
 /**
  * Uses AI to generate a realistic JSON body for a given endpoint.
@@ -21,10 +55,15 @@ async function generateRequestBodyWithAI(endpoint, method, apiKey, sourceFile) {
     Source File Context: ${sourceFile || 'unknown'}
 
     Requirements:
-    1. Infer fields from the path (e.g., /users likely needs 'username', 'email').
-    2. Use standard types (strings for names, numbers for amounts).
-    3. If it looks like an Auth endpoint, include 'username' and 'password'.
-    4. Return ONLY a single JSON object.
+    1. Infer fields from the path AND source code context.
+    2. Look for Pydantic models, TypeScript interfaces, or JSON schemas in the context.
+    3. Use standard types (strings for names, numbers for amounts).
+    4. If it looks like an Auth endpoint, include 'username' and 'password'.
+    5. Return ONLY a single JSON object.
+    6. Ensure all required fields for a 201 Created response are present.
+
+    Source Code Context:
+    ${sourceFile ? fs.readFileSync(sourceFile, 'utf8').substring(0, 2000) : 'None'}
 
     JSON Structure:
   `;
@@ -112,9 +151,13 @@ async function autoExpandUrlWithAI(path, method, apiKey, sourceFile) {
     Context: ${sourceFile || 'unknown'}
 
     Requirements:
-    1. If there are path parameters like {id} or :id, replace them with '1' or a realistic value.
-    2. Add realistic query parameters if applicable (e.g., ?limit=10).
-    3. Return ONLY the relative path string starting with /.
+    1. If there are path parameters like {id} or :id, replace them with a realistic value.
+    2. If the context suggests UUIDs or specific string IDs, use them.
+    3. Add realistic query parameters if applicable (e.g., ?limit=10).
+    4. Return ONLY the relative path string starting with /.
+
+    Source Code Context:
+    ${sourceFile ? fs.readFileSync(sourceFile, 'utf8').substring(0, 1500) : 'None'}
   `;
     try {
         const res = await axios_1.default.post('https://api.openai.com/v1/chat/completions', {
