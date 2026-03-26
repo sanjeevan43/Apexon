@@ -19,37 +19,43 @@ export async function generateRequestBodyWithAI(
   if (!apiKey) return { id: 1, sample: 'no-api-key' };
 
   const prompt = `
-    You are an API testing expert. Generate a realistic JSON request body for this endpoint:
+    You are an API testing expert. Generate a realistic, valid JSON request body for this endpoint:
     Method: ${method}
     Path: ${endpoint}
-    Defined in: ${sourceFile || 'unknown file'}
+    Source File Context: ${sourceFile || 'unknown'}
 
-    Context: Consider the likely schema based on the path and file name.
-    Return ONLY the raw JSON object. No extra text.
+    Requirements:
+    1. Infer fields from the path (e.g., /users likely needs 'username', 'email').
+    2. Use standard types (strings for names, numbers for amounts).
+    3. If it looks like an Auth endpoint, include 'username' and 'password'.
+    4. Return ONLY a single JSON object.
+
+    JSON Structure:
   `;
 
   try {
     const res = await axios.post(
       'https://api.openai.com/v1/chat/completions',
       {
-        model: 'gpt-3.5-turbo-1106',
+        model: 'gpt-4o-mini',
         messages: [{ role: 'user', content: prompt }],
-        temperature: 0.7,
+        temperature: 0.2,
+        response_format: { type: 'json_object' }
       },
       {
         headers: {
           'Authorization': `Bearer ${apiKey}`,
           'Content-Type': 'application/json'
         },
-        timeout: 8000
+        timeout: 10000
       }
     );
 
     const content = res.data.choices[0].message.content.trim();
-    return JSON.parse(content.replace(/^```json|```$/g, ''));
+    return JSON.parse(content);
   } catch (err: any) {
     console.error('AI Body Gen failed:', err.message);
-    return { name: "Test Item", status: "active" }; // Fallback
+    return { name: "Test Item", status: "active" }; 
   }
 }
 
@@ -75,9 +81,9 @@ export async function explainWithAI(
   const prompt = `
     Analyze this API error:
     Endpoint: ${method} ${endpoint}
-    Request Body: ${JSON.stringify(requestData)}
-    Response Status: ${status}
-    Response Body: ${JSON.stringify(response)}
+    Request Body Sent: ${JSON.stringify(requestData)}
+    Response Status Received: ${status}
+    Response Body Received: ${JSON.stringify(response)}
 
     Return a JSON object with:
     {
@@ -92,7 +98,7 @@ export async function explainWithAI(
     const res = await axios.post(
       'https://api.openai.com/v1/chat/completions',
       {
-        model: 'gpt-3.5-turbo-1106',
+        model: 'gpt-4o-mini',
         messages: [{ role: 'user', content: prompt }],
         response_format: { type: 'json_object' }
       },
@@ -101,7 +107,7 @@ export async function explainWithAI(
           'Authorization': `Bearer ${apiKey}`,
           'Content-Type': 'application/json'
         },
-        timeout: 10000
+        timeout: 12000
       }
     );
 
@@ -132,23 +138,25 @@ export async function autoExpandUrlWithAI(
     Suggest a realistic test URL for this endpoint:
     Method: ${method}
     Base Path: ${path}
-    Defined in: ${sourceFile || 'unknown file'}
+    Context: ${sourceFile || 'unknown'}
 
-    Context: If the file is in a folder like 'routers/auth.py', the prefix might be '/auth'.
-    Return ONLY the relative path string starting with /. No markdown.
+    Requirements:
+    1. If there are path parameters like {id} or :id, replace them with '1' or a realistic value.
+    2. Add realistic query parameters if applicable (e.g., ?limit=10).
+    3. Return ONLY the relative path string starting with /.
   `;
 
   try {
     const res = await axios.post(
       'https://api.openai.com/v1/chat/completions',
       {
-        model: 'gpt-3.5-turbo-1106',
+        model: 'gpt-4o-mini',
         messages: [{ role: 'user', content: prompt }],
-        temperature: 0.5,
+        temperature: 0.1,
       },
       {
         headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        timeout: 5000
+        timeout: 6000
       }
     );
 

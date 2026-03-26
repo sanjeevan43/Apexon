@@ -65,14 +65,14 @@ async function scanForPrefixes(files) {
  * Hyper-aggressive patterns for endpoint detection
  */
 const PATTERNS = [
-    // Method calls: app.get("/"), router.post("/users")
-    /(?:app|router|server|route|controller|blueprint|api)\.(get|post|put|delete|patch|all)\s*\(\s*['"`]([^'"`\s?#]+)['"`]/gi,
-    // Decorators: @get("/"), @Post("/")
+    // Express/FastAPI Style: app.get("/"), @router.post("/"), @app.route("/"), router.put("/")
+    /(?:@)?(?:app|router|server|route|api|blueprint|controller)?\.?(get|post|put|delete|patch|all)\s*\(\s*['"`]([^'"`\s?#]+)['"`]/gi,
+    // Decorator Style: @get("/"), @Post("/")
     /@(get|post|put|delete|patch)\s*\(\s*['"`]([^'"`\s?#]+)['"`]/gi,
-    // Flask/Vapor style: @app.route("/path", methods=["GET"])
-    /@(?:app|router|server)\.route\s*\(\s*['"`]([^'"`\s?#]+)['"`]/gi,
+    // Flask Style with methods: @app.route("/path", methods=["POST"])
+    /@(?:app|router|server|api)\.route\s*\(\s*['"`]([^'"`\s?#]+)['"`](?:.*methods\s*=\s*\[\s*(?:['"`](.*?)['"`],?\s*)+\])?/gi,
 ];
-const SUPPORTED_EXTS = new Set(['.js', '.ts', '.py', '.swift']);
+const SUPPORTED_EXTS = new Set(['.js', '.ts', '.py', '.swift', '.go', '.java', '.php']);
 async function scanFile(filePath) {
     try {
         const content = fs.readFileSync(filePath, 'utf8');
@@ -179,7 +179,7 @@ async function deepStringScan(files) {
     const result = [];
     const PATH_LIKE = /['"`](\/[a-zA-Z0-9/_{}:-]+)['"`]/g;
     const METHODS = /\b(GET|POST|PUT|DELETE|PATCH)\b/i;
-    for (const file of files.slice(0, 10)) { // Limit for speed
+    for (const file of files) { // Deep scan all discovered files
         try {
             const content = fs.readFileSync(file.fsPath, 'utf8');
             let match;
