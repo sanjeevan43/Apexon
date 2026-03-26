@@ -2,7 +2,7 @@
   "name": "apexon",
   "displayName": "Apexon",
   "description": "Detect, run, and validate API endpoints in your workspace",
-  "version": "0.3.9",
+  "version": "0.4.1",
   "publisher": "sanjeevan43",
   "license": "MIT",
   "icon": "logo.png",
