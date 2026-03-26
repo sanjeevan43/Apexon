@@ -35,6 +35,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ApexonDashboard = void 0;
 const vscode = __importStar(require("vscode"));
+const fs = __importStar(require("fs"));
 const scanner_1 = require("./scanner");
 const frameworkDetector_1 = require("./frameworkDetector");
 const serverManager_1 = require("./serverManager");
@@ -99,7 +100,40 @@ class ApexonDashboard {
                 await updateConfig('baseURL', msg.baseURL);
                 await updateConfig('apiKey', msg.apiKey);
                 break;
+            case 'autoDiscover':
+                await this.doAutoDiscover();
+                break;
         }
+    }
+    async doAutoDiscover() {
+        this.post({ command: 'status', text: 'Auto-Discovering Environment...' });
+        let baseURL = getConfig('baseURL');
+        let apiKey = getConfig('apiKey');
+        // 1. Infer Base URL if missing
+        if (!baseURL || baseURL === 'http://localhost:8000') {
+            const framework = await (0, frameworkDetector_1.detectFramework)();
+            const portMap = { 'FastAPI': '8000', 'Flask': '5000', 'Express': '3000', 'Vapor': '8080' };
+            baseURL = `http://localhost:${portMap[framework] || '8080'}`;
+            await updateConfig('baseURL', baseURL);
+        }
+        // 2. Infer API Key from .env if missing
+        if (!apiKey) {
+            const envFiles = await vscode.workspace.findFiles('.env');
+            if (envFiles.length > 0) {
+                try {
+                    const content = fs.readFileSync(envFiles[0].fsPath, 'utf8');
+                    const match = content.match(/(?:API_KEY|TOKEN|SECRET|ACCESS_TOKEN)\s*=\s*['"`]?([^'"`\s#]+)['"`]?/i);
+                    if (match) {
+                        apiKey = match[1];
+                        await updateConfig('apiKey', apiKey);
+                    }
+                }
+                catch { }
+            }
+        }
+        this.syncConfig();
+        this.post({ command: 'status', text: 'Environment Ready', active: false });
+        await this.doScan(baseURL);
     }
     async doScan(baseURL) {
         this.post({ command: 'status', text: 'PHASE 1: API Discovery...' });
@@ -112,11 +146,49 @@ class ApexonDashboard {
         this.post({ command: 'scanResult', endpoints: this.endpoints, framework });
     }
     async doAutoPilot(baseURL, apiKey) {
-        await this.doScan(baseURL);
-        if (this.endpoints.length > 0) {
-            const allIndices = this.endpoints.map((_, i) => i);
-            await this.doRun(baseURL, apiKey, allIndices);
+        this.post({ command: 'status', text: '🚀 FULLY AUTOMATED MODE ACTIVE' });
+        let currentURL = baseURL || getConfig('baseURL');
+        let currentKey = apiKey || getConfig('apiKey');
+        // 1. Auto-Discovery if missing or default
+        if (!currentURL || currentURL === 'http://localhost:8000') {
+            this.post({ command: 'status', text: 'Auto-Discovering Base URL...' });
+            const framework = await (0, frameworkDetector_1.detectFramework)();
+            const portMap = { 'FastAPI': '8000', 'Flask': '5000', 'Express': '3000', 'Vapor': '8080' };
+            currentURL = `http://localhost:${portMap[framework] || '8080'}`;
+            await updateConfig('baseURL', currentURL);
         }
+        if (!currentKey) {
+            this.post({ command: 'status', text: 'Auto-Discovering API Key...' });
+            const envFiles = await vscode.workspace.findFiles('.env');
+            if (envFiles.length > 0) {
+                try {
+                    const content = fs.readFileSync(envFiles[0].fsPath, 'utf8');
+                    const match = content.match(/(?:API_KEY|TOKEN|SECRET|ACCESS_TOKEN)\s*=\s*['"`]?([^'"`\s#]+)['"`]?/i);
+                    if (match) {
+                        currentKey = match[1];
+                        await updateConfig('apiKey', currentKey);
+                    }
+                }
+                catch { }
+            }
+        }
+        this.syncConfig();
+        // 2. Scan
+        await this.doScan(currentURL);
+        if (this.endpoints.length === 0) {
+            this.post({ command: 'status', text: 'No endpoints found. Stopping.', active: false });
+            return;
+        }
+        // 3. Execution
+        this.post({ command: 'status', text: `Testing ${this.endpoints.length} Endpoints...` });
+        const allIndices = this.endpoints.map((_, i) => i);
+        const results = await this.doRun(currentURL, currentKey, allIndices);
+        // 4. Auto-Export
+        if (results && results.length > 0) {
+            this.post({ command: 'status', text: 'Generating Final Report...' });
+            await this.doExport(results);
+        }
+        this.post({ command: 'status', text: 'Workflow Complete', active: false });
     }
     async doExport(results) {
         if (!results || results.length === 0)
@@ -138,17 +210,25 @@ class ApexonDashboard {
         }
     }
     async doRun(baseURL, apiKey, indices) {
-        if (!indices?.length)
-            return this.post({ command: 'error', text: 'No endpoints selected.' });
-        if (!baseURL)
-            return this.post({ command: 'error', text: 'Base URL missing.' });
-        if (!apiKey)
-            return this.post({ command: 'error', text: 'API Key missing.' });
+        if (!indices?.length) {
+            this.post({ command: 'error', text: 'No endpoints selected.' });
+            return [];
+        }
+        if (!baseURL) {
+            this.post({ command: 'error', text: 'Base URL missing.' });
+            return [];
+        }
+        if (!apiKey) {
+            this.post({ command: 'error', text: 'API Key missing.' });
+            return [];
+        }
         this.post({ command: 'status', text: 'PHASE 2: Preparation...' });
         const framework = await (0, frameworkDetector_1.detectFramework)();
         const serverErr = await (0, serverManager_1.ensureServerRunning)(baseURL, framework);
-        if (serverErr)
-            return this.post({ command: 'error', text: serverErr });
+        if (serverErr) {
+            this.post({ command: 'error', text: serverErr });
+            return [];
+        }
         const headers = { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' };
         const results = [];
         for (const idx of indices) {
@@ -183,6 +263,7 @@ class ApexonDashboard {
             this.post({ command: 'partialResult', results });
         }
         this.post({ command: 'status', text: 'Done', active: false });
+        return results;
     }
     getHtml() {
         return /* html */ `<!DOCTYPE html>
@@ -250,8 +331,12 @@ class ApexonDashboard {
     <div class="stat"><b id="s-avg">0</b><span>ms Avg</span></div>
   </div>
   <div class="controls">
-    <button id="auto-btn">✨ RUN COMPLETE WORKFLOW</button>
-    <div style="display:flex; gap:8px"><button id="scan-btn" style="flex:1">Discover</button><button id="run-btn" style="flex:1">Execute</button></div>
+    <button id="auto-btn">🚀 RUN FULL PIPELINE (Auto-Discover + Test + Report)</button>
+    <div style="display:flex; gap:8px">
+      <button id="discover-btn" style="flex:1; background:#0f172a; border: 1px solid var(--accent)">Auto-Fill Config</button>
+      <button id="scan-btn" style="flex:1">Discover API</button>
+    </div>
+    <button id="run-btn">Execute Selection</button>
     <button id="export-btn">⬇️ EXPORT JSON REPORT</button>
   </div>
   <div class="list" id="list"></div>
@@ -273,8 +358,11 @@ class ApexonDashboard {
     keyIn.addEventListener('change', save);
 
     document.getElementById('auto-btn').addEventListener('click', function() {
-      save();
       vscode.postMessage({ command: 'autoPilot', baseURL: urlIn.value, apiKey: keyIn.value });
+    });
+
+    document.getElementById('discover-btn').addEventListener('click', function() {
+      vscode.postMessage({ command: 'autoDiscover' });
     });
 
     document.getElementById('scan-btn').addEventListener('click', function() {
