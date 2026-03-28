@@ -254,13 +254,35 @@ export class ApexonDashboard implements vscode.WebviewViewProvider {
       const ep = this.endpoints[idx];
       this.post({ command: 'status', text: `AI Thinking: ${ep.path}...` });
 
-      // Use cached ID if path has a parameter
+      // --- SMART DEPENDENCY RESOLUTION ---
       let currentPath = ep.path;
-      const paramMatch = currentPath.match(/\{([^}]*id[^}]*)\}|:([a-zA-Z]*id[a-zA-Z]*)/i);
+      // Match any placeholder like {id}, {phone}, :uuid, etc.
+      const paramMatch = currentPath.match(/\{([^}]+)\}|:([a-zA-Z0-9_]+)/i);
       if (paramMatch) {
          const paramName = paramMatch[1] || paramMatch[2];
-         if (idCache[paramName]) {
-            currentPath = currentPath.replace(paramMatch[0], idCache[paramName]);
+         // If cache is empty for this specific param, try finding a list endpoint for the parent entity
+         if (!idCache[paramName]) {
+            const listPath = ep.path.split(/\{|:/)[0].replace(/\/$/, '') || '/';
+            const dependency = this.endpoints.find(e => e.method === 'GET' && e.path === listPath && e !== ep);
+            if (dependency) {
+               this.post({ command: 'status', text: `🔍 Empty Cache for ${paramName}. Resolving via GET ${listPath}...` });
+               const depRes = await runRequest(dependency, baseURL, 5000, null, listPath, headers);
+               if (depRes.status === 200 && depRes.responseData) {
+                  const data = Array.isArray(depRes.responseData) ? depRes.responseData[0] : depRes.responseData;
+                  if (data && typeof data === 'object') {
+                    // Cache EVERYTHING from the response to maximize hits
+                    Object.keys(data).forEach(key => { idCache[key] = data[key]; });
+                    // Also generic fallbacks
+                    if (!idCache['id']) idCache['id'] = data.id || Object.values(idCache)[0];
+                    if (!idCache[paramName]) idCache[paramName] = data[paramName] || data.id || data.uuid || Object.values(idCache)[0];
+                  }
+               }
+            }
+         }
+         // Apply from cache (specific first, then generic 'id', then first available cache entry)
+         const val = idCache[paramName] || idCache['id'] || Object.values(idCache)[0];
+         if (val) {
+            currentPath = currentPath.replace(paramMatch[0], val);
          }
       }
 
@@ -307,12 +329,17 @@ export class ApexonDashboard implements vscode.WebviewViewProvider {
         }
       } else {
         // Collect IDs from successful GET responses for future use
-        if (ep.method === 'GET' && Array.isArray(res.responseData)) {
-           const first = res.responseData[0];
-           if (first && first.id) idCache['id'] = first.id;
-           if (first && first.uuid) idCache['uuid'] = first.uuid;
-        } else if (ep.method === 'GET' && res.responseData && res.responseData.id) {
-           idCache['id'] = res.responseData.id;
+        if (ep.method === 'GET' && res.responseData) {
+           const data = Array.isArray(res.responseData) ? res.responseData[0] : res.responseData;
+           if (data && typeof data === 'object') {
+             Object.keys(data).forEach(key => {
+               if (key.toLowerCase().endsWith('id') || key.toLowerCase() === 'uuid') {
+                 idCache[key] = data[key];
+                 // Also fallback to generic 'id' if possible
+                 if (!idCache['id']) idCache['id'] = data[key];
+               }
+             });
+           }
         }
       }
 

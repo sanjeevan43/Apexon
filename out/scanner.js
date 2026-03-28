@@ -43,19 +43,28 @@ const vscode = __importStar(require("vscode"));
 const axios_1 = __importDefault(require("axios"));
 // Cache for file-level prefixes
 const FILE_PREFIXES = {};
-/** Captures router prefixes: app.include_router(..., prefix="/auth"), app.use("/api", router) */
+/** Captures router prefixes: app.include_router(main_router, prefix="/api/v1"), app.use("/api", router) */
 async function scanForPrefixes(files) {
-    const PREFIX_REGEX = /(?:\.include_router|\.use|\.register_blueprint)\s*\(\s*(?:[^,]+,\s*)?['"`]([^'"`\s?#]+)['"`]/gi;
+    // Reset cache
+    for (const key in FILE_PREFIXES)
+        delete FILE_PREFIXES[key];
+    // Group 1: Optional router variable, Group 2: The prefix string
+    const PREFIX_REGEX = /(?:\.include_router|\.use|\.register_blueprint)\s*\(\s*([^,()]+)?\s*,?\s*(?:prefix\s*=\s*)?['"`]([^'"`\s?#]+)['"`]/gi;
     for (const file of files) {
         try {
             const content = fs.readFileSync(file.fsPath, 'utf8');
             let match;
             while ((match = PREFIX_REGEX.exec(content)) !== null) {
-                const prefix = match[1];
+                const routerVar = match[1] ? match[1].trim() : '';
+                const prefix = match[2];
                 const cleaned = prefix.endsWith('/') ? prefix.slice(0, -1) : prefix;
-                const likelyFile = cleaned.split('/').pop() || '';
+                // Store by global, by prefix tail, and by router variable name if found
+                FILE_PREFIXES['__global__'] = cleaned;
+                const likelyFile = cleaned.split('/').filter(Boolean).pop() || '';
                 if (likelyFile)
                     FILE_PREFIXES[likelyFile] = cleaned;
+                if (routerVar)
+                    FILE_PREFIXES[routerVar] = cleaned;
             }
         }
         catch { }
@@ -71,6 +80,8 @@ const PATTERNS = [
     /@(get|post|put|delete|patch)\s*\(\s*['"`]([^'"`\s?#]+)['"`]/gi,
     // Flask Style with methods: @app.route("/path", methods=["POST"])
     /@(?:app|router|server|api)\.route\s*\(\s*['"`]([^'"`\s?#]+)['"`](?:.*methods\s*=\s*\[\s*(?:['"`](.*?)['"`],?\s*)+\])?/gi,
+    // Generic Fetch/Axios calls (for frontends or internal calls)
+    /(?:fetch|axios|get|post|put|delete|patch)\s*\(\s*['"`]([^'"`\s?#]+?)['"`]/gi,
 ];
 const SUPPORTED_EXTS = new Set(['.js', '.ts', '.py', '.swift', '.go', '.java', '.php']);
 async function scanFile(filePath) {
@@ -104,18 +115,43 @@ async function scanFile(filePath) {
 }
 /** Tries to discover and parse Swagger/OpenAPI JSON */
 async function scanSwagger(baseURL, manualSource) {
-    const sources = manualSource ? [manualSource] : ['/swagger.json', '/v2/api-docs', '/openapi.json'];
+    const sources = manualSource ? [manualSource] : [
+        '/swagger.json', '/v2/api-docs', '/openapi.json',
+        '/api/openapi.json', '/api/v1/openapi.json',
+        '/swagger/v1/swagger.json', '/docs/openapi.json'
+    ];
     const results = [];
     for (const src of sources) {
         try {
             const url = src.startsWith('http') ? src : baseURL.replace(/\/$/, '') + (src.startsWith('/') ? src : '/' + src);
             const res = await axios_1.default.get(url, { timeout: 3000 });
             if (res.data && (res.data.paths || res.data.openapi || res.data.swagger)) {
+                // Extract server-level prefix if any
+                let specPrefix = '';
+                if (res.data.servers && res.data.servers[0]?.url) {
+                    const u = res.data.servers[0].url;
+                    if (u.startsWith('/') && u !== '/')
+                        specPrefix = u;
+                    else if (u.startsWith('http')) {
+                        try {
+                            specPrefix = new URL(u).pathname;
+                        }
+                        catch { }
+                    }
+                }
+                else if (res.data.basePath && res.data.basePath !== '/') {
+                    specPrefix = res.data.basePath;
+                }
+                if (specPrefix === '/')
+                    specPrefix = '';
                 Object.keys(res.data.paths).forEach(path => {
                     Object.keys(res.data.paths[path]).forEach(method => {
+                        if (method.toLowerCase() === 'parameters')
+                            return;
+                        const fullPath = (specPrefix + path).replace(/\/+/g, '/');
                         results.push({
                             method: method.toUpperCase(),
-                            path: path,
+                            path: fullPath,
                             file: src,
                             isSwagger: true
                         });
@@ -133,11 +169,19 @@ async function scanSwagger(baseURL, manualSource) {
 async function scanWorkspace(baseURL, openapiSource) {
     const endpoints = [];
     const seen = new Set();
-    // PHASE 1: Try Swagger First (Discovery)
+    // Reset cache for fresh scan
+    for (const key in FILE_PREFIXES)
+        delete FILE_PREFIXES[key];
     if (baseURL) {
         const swEndpoints = await scanSwagger(baseURL, openapiSource);
-        if (swEndpoints.length > 0)
-            return swEndpoints;
+        for (const ep of swEndpoints) {
+            const key = `${ep.method}:${ep.path}`;
+            if (!seen.has(key)) {
+                seen.add(key);
+                endpoints.push(ep);
+            }
+        }
+        // We used to return early here. Now we continue to MERGE with code results.
     }
     let files = await vscode.workspace.findFiles('**/*.{js,ts,py,swift,go,java,php}', '{**/node_modules/**,**/.venv/**,**/__pycache__/**,.git/**}');
     const active = vscode.window.activeTextEditor?.document;
@@ -154,6 +198,10 @@ async function scanWorkspace(baseURL, openapiSource) {
         for (const ep of found) {
             if (prefix && !ep.path.startsWith(prefix)) {
                 ep.path = prefix + (ep.path.startsWith('/') ? ep.path : '/' + ep.path);
+            }
+            else if (FILE_PREFIXES['__global__'] && !ep.path.startsWith(FILE_PREFIXES['__global__'])) {
+                // Fallback to global prefix if no file-specific prefix found
+                ep.path = FILE_PREFIXES['__global__'] + (ep.path.startsWith('/') ? ep.path : '/' + ep.path);
             }
             const key = `${ep.method}:${ep.path}`;
             if (!seen.has(key)) {
