@@ -53,4 +53,4 @@ The dashboard provides a "Postman + Swagger" experience:
 
 *   **Author**: `sanjeevan43`
 *   **License**: `MIT`
-*   **Version**: `0.3.1`
+*   **Version**: `0.5.0`

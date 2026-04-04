@@ -39,6 +39,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.ensureServerRunning = ensureServerRunning;
 exports.killServer = killServer;
 const cp = __importStar(require("child_process"));
+const fs = __importStar(require("fs"));
+const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
 const axios_1 = __importDefault(require("axios"));
 /** Framework-specific start commands */
@@ -57,12 +59,17 @@ async function isServerUp(baseURL) {
         await axios_1.default.get(`${url}/health`, { timeout: 1000 });
         return true;
     }
-    catch {
+    catch (err) {
+        // If we get ANY response (even 401, 404, 500), the server is UP.
+        if (err.response)
+            return true;
         try {
             await axios_1.default.get(baseURL, { timeout: 1000 });
             return true;
         }
-        catch {
+        catch (err2) {
+            if (err2.response)
+                return true;
             return false;
         }
     }
@@ -72,13 +79,20 @@ async function ensureServerRunning(baseURL, framework) {
     // Check if ALREADY up - Be quiet here
     if (await isServerUp(baseURL))
         return null;
-    const startArgs = START_COMMANDS[framework];
-    if (!startArgs) {
+    const config = START_COMMANDS[framework];
+    if (!config)
         return `Server at ${baseURL} is not responding. Start your ${framework} server manually.`;
-    }
+    const cmd = config[0];
+    let args = [...config[1]];
     const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
+    // STARK PROTOCOL: Support modular api/ folder structure
+    if (framework === 'FastAPI') {
+        if (fs.existsSync(path.join(root, 'api', 'main.py'))) {
+            args = ['api.main:app', '--reload'];
+        }
+    }
     // Spawning the server process
-    serverProcess = cp.spawn(startArgs[0], startArgs[1], {
+    serverProcess = cp.spawn(cmd, args, {
         cwd: root,
         shell: true,
         stdio: 'ignore', // Avoid cluttering the console

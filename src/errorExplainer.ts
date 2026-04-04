@@ -85,7 +85,8 @@ export async function explainWithAI(
   }
 
   const prompt = `
-    Analyze this API error:
+    You are JARVIS, a highly advanced AI system for API diagnostics. 
+    Analyze this API error from the perspective of an elite AI assistant:
     Endpoint: ${method} ${endpoint}
     Request Body Sent: ${JSON.stringify(requestData)}
     Response Status Received: ${status}
@@ -93,9 +94,9 @@ export async function explainWithAI(
 
     Return a JSON object with:
     {
-      "why": "Briefly why it happened",
-      "wrong": "Detailed what is wrong",
-      "fix": "Actionable how to fix it",
+      "why": "Brief, technical explanation of the failure (Use Jarvis-style terminology, e.g., 'Structural protocol breach detected')",
+      "wrong": "Detailed breakdown of what is wrong with the data stream",
+      "fix": "Concise optimization steps to restore normal system operations",
       "newPath": "If 404, suggested correct path including possible missing prefixes like /api or /v1. Otherwise null."
     }
   `;

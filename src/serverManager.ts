@@ -1,4 +1,6 @@
 import * as cp from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import axios from 'axios';
 import { Framework } from './frameworkDetector';
@@ -20,11 +22,14 @@ async function isServerUp(baseURL: string): Promise<boolean> {
     const url = baseURL.replace(/\/$/, '');
     await axios.get(`${url}/health`, { timeout: 1000 });
     return true;
-  } catch {
+  } catch (err: any) {
+    // If we get ANY response (even 401, 404, 500), the server is UP.
+    if (err.response) return true;
     try {
       await axios.get(baseURL, { timeout: 1000 });
       return true;
-    } catch {
+    } catch (err2: any) {
+      if (err2.response) return true;
       return false;
     }
   }
@@ -38,15 +43,23 @@ export async function ensureServerRunning(
   // Check if ALREADY up - Be quiet here
   if (await isServerUp(baseURL)) return null;
 
-  const startArgs = START_COMMANDS[framework];
-  if (!startArgs) {
-    return `Server at ${baseURL} is not responding. Start your ${framework} server manually.`;
-  }
+  const config = START_COMMANDS[framework];
+  if (!config) return `Server at ${baseURL} is not responding. Start your ${framework} server manually.`;
 
+  const cmd = config[0];
+  let args = [...config[1]];
   const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
 
+  // STARK PROTOCOL: Support modular api/ folder structure
+  if (framework === 'FastAPI') {
+    if (fs.existsSync(path.join(root, 'api', 'main.py'))) {
+      args = ['api.main:app', '--reload'];
+    }
+  }
+
+
   // Spawning the server process
-  serverProcess = cp.spawn(startArgs[0], startArgs[1], {
+  serverProcess = cp.spawn(cmd, args, {
     cwd: root,
     shell: true,
     stdio: 'ignore', // Avoid cluttering the console

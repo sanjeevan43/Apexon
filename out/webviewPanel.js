@@ -51,6 +51,7 @@ class ApexonDashboard {
     constructor(extensionUri) {
         this.extensionUri = extensionUri;
         this.endpoints = [];
+        this.diagnosticCollection = vscode.languages.createDiagnosticCollection('apexon');
     }
     resolveWebviewView(webviewView) {
         this._view = webviewView;
@@ -88,7 +89,7 @@ class ApexonDashboard {
                 await this.doScan(msg.baseURL);
                 break;
             case 'run':
-                await this.doRun(msg.baseURL, msg.apiKey, msg.indices);
+                await this.doRun(msg.baseURL, msg.apiKey, msg.indices, msg.overrides);
                 break;
             case 'autoPilot':
                 await this.doAutoPilot(msg.baseURL, msg.apiKey);
@@ -106,6 +107,19 @@ class ApexonDashboard {
             case 'stop':
                 await this.doStop();
                 break;
+            case 'openFile':
+                await this.doOpenFile(msg.file, msg.line);
+                break;
+        }
+    }
+    async doOpenFile(filePath, line) {
+        const uri = vscode.Uri.file(filePath);
+        const doc = await vscode.workspace.openTextDocument(uri);
+        const editor = await vscode.window.showTextDocument(doc);
+        if (line) {
+            const pos = new vscode.Position(line - 1, 0);
+            editor.selection = new vscode.Selection(pos, pos);
+            editor.revealRange(new vscode.Range(pos, pos));
         }
     }
     async doStop() {
@@ -177,11 +191,11 @@ class ApexonDashboard {
             }
         }
         this.syncConfig();
-        this.post({ command: 'status', text: 'Environment Ready', active: false });
+        this.post({ command: 'status', text: 'ENVIRONMENT CALIBRATED. ALL SYSTEMS NOMINAL.', active: false });
         await this.doScan(baseURL);
     }
     async doScan(baseURL) {
-        this.post({ command: 'status', text: 'PHASE 1: API Discovery...' });
+        this.post({ command: 'status', text: 'SCANNING WORKSPACE: MAPPING ARCHITECTURAL ENDPOINTS...' });
         this.endpoints = await (0, scanner_1.scanWorkspace)(baseURL);
         if (this.endpoints.length === 0) {
             this.post({ command: 'error', text: 'API structure not detected' });
@@ -191,19 +205,19 @@ class ApexonDashboard {
         this.post({ command: 'scanResult', endpoints: this.endpoints, framework });
     }
     async doAutoPilot(baseURL, apiKey) {
-        this.post({ command: 'status', text: '🚀 FULLY AUTOMATED MODE ACTIVE' });
+        this.post({ command: 'status', text: 'PROTOCOL: AUTO-OPTIMIZE ACTIVATED. STAND BY.' });
         let currentURL = baseURL || getConfig('baseURL');
         let currentKey = apiKey || getConfig('apiKey');
         // 1. Auto-Discovery if missing or default
         if (!currentURL || currentURL === 'http://localhost:8000') {
-            this.post({ command: 'status', text: 'Auto-Discovering Base URL...' });
+            this.post({ command: 'status', text: 'SEARCHING FOR HOST SIGNATURE...' });
             const framework = await (0, frameworkDetector_1.detectFramework)();
             const portMap = { 'FastAPI': '8000', 'Flask': '5000', 'Express': '3000', 'Vapor': '8080' };
             currentURL = `http://localhost:${portMap[framework] || '8080'}`;
             await updateConfig('baseURL', currentURL);
         }
         if (!currentKey) {
-            this.post({ command: 'status', text: 'Auto-Discovering API Key...' });
+            this.post({ command: 'status', text: 'DECRYPTING SECURITY TOKENS...' });
             const envFiles = await vscode.workspace.findFiles('.env');
             if (envFiles.length > 0) {
                 try {
@@ -225,15 +239,15 @@ class ApexonDashboard {
             return;
         }
         // 3. Execution
-        this.post({ command: 'status', text: `Testing ${this.endpoints.length} Endpoints...` });
+        this.post({ command: 'status', text: `EXECUTING STRIKE ON ${this.endpoints.length} TARGETS...` });
         const allIndices = this.endpoints.map((_, i) => i);
         const results = await this.doRun(currentURL, currentKey, allIndices);
         // 4. Auto-Export
         if (results && results.length > 0) {
-            this.post({ command: 'status', text: 'Generating Final Report...' });
+            this.post({ command: 'status', text: 'COMPILING POST-ACTION DATA...' });
             await this.doExport(results);
         }
-        this.post({ command: 'status', text: 'Workflow Complete', active: false });
+        this.post({ command: 'status', text: 'MISSION ACCOMPLISHED. DATA ARCHIVED.', active: false });
     }
     async doExport(results) {
         if (!results || results.length === 0)
@@ -255,7 +269,7 @@ class ApexonDashboard {
             default: return { reason: 'HTTP ' + status, fix: 'Check request body and headers' };
         }
     }
-    async doRun(baseURL, apiKey, indices) {
+    async doRun(baseURL, apiKey, indices, overrides = {}) {
         if (!indices?.length) {
             this.post({ command: 'error', text: 'No endpoints selected.' });
             return [];
@@ -268,7 +282,7 @@ class ApexonDashboard {
             this.post({ command: 'error', text: 'API Key missing.' });
             return [];
         }
-        this.post({ command: 'status', text: 'PHASE 2: Preparation...' });
+        this.post({ command: 'status', text: 'SECURE LINK ESTABLISHED. PREPARING PAYLOAD...' });
         const framework = await (0, frameworkDetector_1.detectFramework)();
         const serverErr = await (0, serverManager_1.ensureServerRunning)(baseURL, framework);
         if (serverErr) {
@@ -277,29 +291,40 @@ class ApexonDashboard {
         }
         const headers = { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' };
         const results = [];
-        const idCache = {}; // Cache for discovered IDs
+        const idCache = {};
+        // Initial clean-up of problems
+        this.diagnosticCollection.clear();
+        const newDiagnostics = new Map();
         for (const idx of indices) {
             const ep = this.endpoints[idx];
-            this.post({ command: 'status', text: `AI Thinking: ${ep.path}...` });
+            this.post({ command: 'status', text: `ANALYZING TARGET: ${ep.path}...` });
             // --- SMART DEPENDENCY RESOLUTION ---
             let currentPath = ep.path;
-            // Match any placeholder like {id}, {phone}, :uuid, etc.
-            const paramMatch = currentPath.match(/\{([^}]+)\}|:([a-zA-Z0-9_]+)/i);
-            if (paramMatch) {
-                const paramName = paramMatch[1] || paramMatch[2];
-                // If cache is empty for this specific param, try finding a list endpoint for the parent entity
+            // 1. Apply User Manual Overrides First
+            const epOverrides = overrides[idx.toString()] || {};
+            Object.keys(epOverrides).forEach(param => {
+                const val = epOverrides[param];
+                if (val) {
+                    // Replace both {param} and :param styles
+                    const regex = new RegExp(`\\{${param}\\}|:${param}\\b`, 'g');
+                    currentPath = currentPath.replace(regex, val);
+                }
+            });
+            // 2. Auto-Discovery for remaining placeholders
+            const placeholders = currentPath.match(/\{([^}]+)\}|:([a-zA-Z0-9_]+)/g) || [];
+            for (const placeholder of placeholders) {
+                const paramName = placeholder.startsWith('{') ? placeholder.slice(1, -1) : placeholder.slice(1);
+                // If still has placeholder and no manual override, try cache
                 if (!idCache[paramName]) {
                     const listPath = ep.path.split(/\{|:/)[0].replace(/\/$/, '') || '/';
                     const dependency = this.endpoints.find(e => e.method === 'GET' && e.path === listPath && e !== ep);
                     if (dependency) {
-                        this.post({ command: 'status', text: `🔍 Empty Cache for ${paramName}. Resolving via GET ${listPath}...` });
+                        this.post({ command: 'status', text: `ID_MISSING: FETCHING DEPENDENCY FROM ${listPath}...` });
                         const depRes = await (0, requestRunner_1.runRequest)(dependency, baseURL, 5000, null, listPath, headers);
                         if (depRes.status === 200 && depRes.responseData) {
                             const data = Array.isArray(depRes.responseData) ? depRes.responseData[0] : depRes.responseData;
                             if (data && typeof data === 'object') {
-                                // Cache EVERYTHING from the response to maximize hits
                                 Object.keys(data).forEach(key => { idCache[key] = data[key]; });
-                                // Also generic fallbacks
                                 if (!idCache['id'])
                                     idCache['id'] = data.id || Object.values(idCache)[0];
                                 if (!idCache[paramName])
@@ -308,10 +333,9 @@ class ApexonDashboard {
                         }
                     }
                 }
-                // Apply from cache (specific first, then generic 'id', then first available cache entry)
                 const val = idCache[paramName] || idCache['id'] || Object.values(idCache)[0];
                 if (val) {
-                    currentPath = currentPath.replace(paramMatch[0], val);
+                    currentPath = currentPath.replace(placeholder, val);
                 }
             }
             const smartPath = await (0, errorExplainer_1.autoExpandUrlWithAI)(currentPath, ep.method, apiKey, ep.file);
@@ -319,7 +343,7 @@ class ApexonDashboard {
             if (['POST', 'PUT', 'PATCH'].includes(ep.method)) {
                 body = await (0, errorExplainer_1.generateRequestBodyWithAI)(ep.path, ep.method, apiKey, ep.file);
             }
-            this.post({ command: 'status', text: `Executing: ${ep.method} ${smartPath}...` });
+            this.post({ command: 'status', text: `ENGAGING: ${ep.method} -> ${smartPath}...` });
             let res = await (0, requestRunner_1.runRequest)(ep, baseURL, 5000, body, smartPath, headers);
             res.passed = res.status === 200 || res.status === 201;
             let ai;
@@ -329,7 +353,7 @@ class ApexonDashboard {
                 classification = this.classifyError(res.status ?? 0);
                 // 1. Recover from 422 (Unprocessable Entity) using AI to fix body
                 if (res.status === 422 && apiKey) {
-                    this.post({ command: 'status', text: `Self-Healing 422 (Body Fix)...` });
+                    this.post({ command: 'status', text: `ERROR 422: ADAPTIVE PAYLOAD RESTRUCTURING...` });
                     const fixAi = await (0, errorExplainer_1.explainWithAI)(smartPath, ep.method, body, res.responseData, 422, apiKey);
                     const fixedBody = await (0, errorExplainer_1.generateRequestBodyWithAI)(ep.path, ep.method, apiKey, ep.file + "\nERROR CONTEXT: " + JSON.stringify(res.responseData));
                     const retryRes = await (0, requestRunner_1.runRequest)(ep, baseURL, 5000, fixedBody, smartPath, headers);
@@ -342,7 +366,7 @@ class ApexonDashboard {
                 if (res.status === 404 && apiKey) {
                     ai = await (0, errorExplainer_1.explainWithAI)(smartPath, ep.method, res.requestBody, res.responseData, res.status, apiKey);
                     if (ai?.newPath && ai.newPath !== smartPath) {
-                        this.post({ command: 'status', text: `Self-Healing 404...` });
+                        this.post({ command: 'status', text: `ERROR 404: RECALIBRATING COORDINATES...` });
                         const retryRes = await (0, requestRunner_1.runRequest)(ep, baseURL, 5000, body, ai.newPath, headers);
                         if (retryRes.status === 200 || retryRes.status === 201) {
                             res = { ...retryRes, passed: true };
@@ -367,217 +391,284 @@ class ApexonDashboard {
                     }
                 }
             }
+            // --- PUSH TO VSCODE PROBLEMS PANEL ---
+            if (!res.passed && ep.file && ep.line) {
+                const severity = res.status === 404 ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Error;
+                const msg = `[APE-BREACH] ${ep.method} ${ep.path} -> ${res.status || res.statusText}. ${ai?.why || 'Structural anomaly detected.'}`;
+                const diagnostic = new vscode.Diagnostic(new vscode.Range(ep.line - 1, 0, ep.line - 1, 100), msg, severity);
+                diagnostic.source = 'Apexon Jarvis';
+                const existing = newDiagnostics.get(ep.file) || [];
+                existing.push(diagnostic);
+                newDiagnostics.set(ep.file, existing);
+            }
             results[idx] = { ...res, ai, classification };
             this.post({ command: 'partialResult', results });
         }
-        this.post({ command: 'status', text: 'Done', active: false });
+        // Apply all diagnostics at once
+        newDiagnostics.forEach((diags, file) => {
+            this.diagnosticCollection.set(vscode.Uri.file(file), diags);
+        });
+        this.post({ command: 'status', text: 'ANALYSIS COMPLETE.', active: false });
         return results;
     }
     getHtml() {
         return /* html */ `<!DOCTYPE html>
 <html lang="en">
 <head>
+<meta charset="UTF-8">
 <style>
+  @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@300;400;500;600;700&family=Space+Mono&display=swap');
   :root {
-    --bg: #0f172a; --card: #1e293b; --accent: #6366f1; --highlight: #818cf8; --text: #f8fafc;
-    --text-dim: #94a3b8; --success: #10b981; --error: #ef4444; --border: rgba(255,255,255,0.08);
+    --bg: #020617;
+    --card: rgba(15, 23, 42, 0.7);
+    --accent: #0ea5e9;
+    --accent-glow: rgba(14, 165, 233, 0.3);
+    --success: #10b981;
+    --error: #f43f5e;
+    --text: #f0f9ff;
+    --text-dim: #94a3b8;
+    --border: rgba(14, 165, 233, 0.2);
   }
-  body { background: var(--bg); color: var(--text); font-family: -apple-system, sans-serif; padding: 15px; font-size: 11px; margin: 0; }
-  .logo { font-weight: 800; font-size: 14px; letter-spacing: 2px; color: var(--highlight); margin-bottom: 20px; text-transform: uppercase; }
-  .stages { display: flex; gap: 4px; margin-bottom: 20px; }
-  .stage { flex: 1; height: 3px; background: rgba(255,255,255,0.1); border-radius: 2px; position: relative; }
-  .stage.active { background: var(--accent); }
-  .stage-lbl { position: absolute; top: 6px; font-size: 7px; font-weight: bold; color: var(--text-dim); }
-  .config-box { background: var(--card); padding: 15px; border-radius: 8px; border: 1px solid var(--border); margin-bottom: 20px; }
-  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  .input-grp { display: flex; flex-direction: column; gap: 4px; }
-  label { font-size: 9px; text-transform: uppercase; color: var(--text-dim); font-weight: 800; }
-  input { background: #000; border: 1px solid var(--border); color: #fff; padding: 8px 10px; border-radius: 4px; font-family: monospace; font-size: 11px; width: 100%; box-sizing: border-box; }
-  .summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 15px; }
-  .stat { background: var(--card); border: 1px solid var(--border); padding: 8px; border-radius: 6px; text-align: center; }
-  .stat b { display: block; font-size: 14px; }
-  .stat span { font-size: 7px; color: var(--text-dim); text-transform: uppercase; }
-  .controls { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; }
-  button { width: 100%; border: none; padding: 10px; border-radius: 6px; font-weight: 800; cursor: pointer; font-size: 11px; }
-  #auto-btn { background: linear-gradient(90deg, #6366f1, #c084fc); color: #fff; }
-  #run-btn { background: var(--accent); color: #fff; }
-  #scan-btn { background: #334155; color: #fff; }
-  #export-btn { background: transparent; border: 1px solid var(--accent); color: var(--accent); margin-top: 5px; }
-  .list { display: flex; flex-direction: column; gap: 6px; }
-  .group-header { padding: 4px 10px; color: var(--highlight); font-weight: bold; font-size: 9px; margin-top: 10px; opacity: 0.7; }
-  .item { background: var(--card); border: 1px solid var(--border); border-radius: 5px; overflow: hidden; }
-  .item-head { padding: 8px 12px; cursor: pointer; display: flex; align-items: center; gap: 10px; }
-  .method { font-weight: bold; font-size: 8px; min-width: 45px; text-align: center; padding: 3px; color: #fff; background: #475569; border-radius: 3px; }
-  .path { font-family: monospace; flex: 1; font-size: 11px; }
-  .tag { font-weight: bold; font-size: 10px; margin-left: auto; }
-  .passed { color: var(--success); } .failed { color: var(--error); }
-  .details { padding: 10px; border-top: 1px solid var(--border); background: rgba(0,0,0,0.15); display: none; }
-  .open .details { display: block; }
-  pre { background: #000; padding: 8px; border-radius: 4px; font-size: 9px; overflow-x: auto; border: 1px solid rgba(255,255,255,0.05); }
-  .err-box { background: rgba(239, 68, 68, 0.1); border-left: 3px solid var(--error); padding: 8px; font-size: 9px; margin-bottom: 5px; }
-  #status-bar { position: fixed; bottom:0; left:0; right:0; background: var(--accent); color:#fff; padding: 4px 12px; font-size: 9px; font-weight: 800; z-index: 1000; display: none; }
+  body { 
+    background: var(--bg); 
+    color: var(--text); 
+    font-family: 'Rajdhani', sans-serif; 
+    padding: 20px; 
+    font-size: 13px; 
+    margin: 0; 
+    overflow-x: hidden;
+    background-image: 
+      radial-gradient(circle at 50% 0%, rgba(14, 165, 233, 0.15) 0%, transparent 60%),
+      radial-gradient(circle at 10% 90%, rgba(16, 185, 129, 0.05) 0%, transparent 40%),
+      linear-gradient(rgba(14, 165, 233, 0.03) 1.5px, transparent 1.5px),
+      linear-gradient(90deg, rgba(14, 165, 233, 0.03) 1.5px, transparent 1.5px);
+    background-size: 100% 100%, 100% 100%, 40px 40px, 40px 40px;
+  }
+  .header { display: flex; align-items: center; gap: 12px; margin-bottom: 25px; border-bottom: 1px solid var(--border); padding-bottom: 15px; }
+  .logo-ring { width: 40px; height: 40px; border: 2px solid var(--accent); border-radius: 50%; display: flex; align-items: center; justify-content: center; position: relative; animation: pulse 2s infinite; }
+  .logo-ring::after { content: ''; position: absolute; width: 30px; height: 30px; border: 1px dashed var(--accent); border-radius: 50%; animation: spin 4s linear infinite; }
+  .title { text-transform: uppercase; letter-spacing: 3px; font-weight: 700; font-size: 18px; color: var(--accent); }
+  @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 var(--accent-glow); } 70% { box-shadow: 0 0 0 10px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+
+  .status-hud { background: var(--card); backdrop-filter: blur(10px); border: 1px solid var(--border); border-radius: 12px; padding: 15px; margin-bottom: 20px; position: relative; overflow: hidden; min-height: 55px; }
+  .status-hud::before { content: ''; position: absolute; top: 0; left: 0; width: 4px; height: 100%; background: var(--accent); }
+  .status-label { font-size: 10px; text-transform: uppercase; color: var(--text-dim); margin-bottom: 5px; letter-spacing: 1px; }
+  .status-text { font-size: 13px; font-weight: 600; color: var(--accent); white-space: nowrap; overflow: hidden; border-right: 2px solid var(--accent); width: 0; animation: typing 2.5s steps(40, end) forwards, blink 0.75s infinite; font-family: 'Space Mono', monospace; }
+  @keyframes typing { from { width: 0 } to { width: 100% } }
+  @keyframes blink { from, to { border-color: transparent } 50% { border-color: var(--accent) } }
+
+  .action-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 25px; }
+  button { 
+    background: linear-gradient(135deg, rgba(14, 165, 233, 0.2), rgba(14, 165, 233, 0.1)); 
+    border: 1px solid var(--accent); 
+    color: var(--accent); 
+    padding: 14px; 
+    border-radius: 10px; 
+    font-family: 'Rajdhani', sans-serif; 
+    font-weight: 700; 
+    text-transform: uppercase; 
+    letter-spacing: 2px; 
+    cursor: pointer; 
+    transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+    display: flex; align-items: center; justify-content: center; gap: 10px;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+    position: relative; overflow: hidden;
+  }
+  button::before { content: ''; position: absolute; top: 0; left: -100%; width: 100%; height: 100%; background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent); transition: 0.5s; }
+  button:hover::before { left: 100%; }
+  button:hover { background: var(--accent); color: #fff; box-shadow: 0 0 25px var(--accent-glow); transform: translateY(-3px); }
+  button:active { transform: translateY(-1px); }
+  #auto-btn { background: linear-gradient(135deg, var(--accent), #0369a1); color: #fff; grid-column: span 2; border: none; }
+  #auto-btn:hover { background: linear-gradient(135deg, #38bdf8, var(--accent)); }
+
+  .stats-deck { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 25px; }
+  .stat-card { background: var(--card); border: 1px solid var(--border); padding: 10px; border-radius: 8px; text-align: center; }
+  .stat-val { font-size: 18px; font-weight: 700; color: #fff; }
+  .stat-lbl { font-size: 9px; color: var(--text-dim); text-transform: uppercase; }
+
+  .endpoint-list { background: rgba(0,0,0,0.2); border-radius: 12px; padding: 10px; border: 1px solid rgba(255,255,255,0.05); }
+  .group-title { font-size: 11px; color: var(--accent); font-weight: 700; margin: 15px 0 8px 5px; text-transform: uppercase; opacity: 0.8; }
+  .item { background: var(--card); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 12px; transition: all 0.3s; overflow: hidden; }
+  .item:hover { border-color: var(--accent); background: rgba(14, 165, 233, 0.05); }
+  .item-head { padding: 12px; display: flex; align-items: center; gap: 12px; cursor: pointer; }
+  .method-tag { font-family: 'Space Mono', monospace; font-size: 10px; padding: 2px 6px; border-radius: 4px; background: #334155; color: #fff; min-width: 45px; text-align: center; }
+  .p-GET { background: #0ea5e9; } .p-POST { background: #10b981; } .p-PUT { background: #f59e0b; } .p-DELETE { background: #f43f5e; }
+  .path-text { font-family: 'Space Mono', monospace; font-size: 11px; flex: 1; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; }
+  .s-pass { background: var(--success); box-shadow: 0 0 8px var(--success); }
+  .s-fail { background: var(--error); box-shadow: 0 0 8px var(--error); }
+
+  .details { padding: 15px; background: rgba(0,0,0,0.3); border-top: 1px solid var(--border); display: none; }
+  .open .details { display: block; animation: slideDown 0.3s ease-out; }
+  @keyframes slideDown { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+  
+  .param-box { margin-bottom: 12px; padding: 12px; background: rgba(14, 165, 233, 0.1); border-radius: 8px; border: 1px solid var(--accent); }
+  .param-title { font-size: 10px; text-transform: uppercase; color: var(--accent); margin-bottom: 10px; font-weight: 700; letter-spacing: 1px; }
+  .param-input { width: 100%; background: #000; border: 1px solid var(--border); color: var(--accent); padding: 8px; border-radius: 4px; font-family: 'Space Mono', monospace; font-size: 11px; margin-bottom: 8px; box-sizing: border-box; }
+  .param-input:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 8px var(--accent-glow); }
+
+  pre { background: rgba(0,0,0,0.5); padding: 15px; border-radius: 10px; font-size: 11px; overflow-x: auto; color: #38bdf8; border: 1px solid rgba(14, 165, 233, 0.15); font-family: 'Space Mono', monospace; line-height: 1.4; box-shadow: inset 0 2px 10px rgba(0,0,0,0.5); }
+  .ai-diagnosis { 
+    background: linear-gradient(90deg, rgba(14, 165, 233, 0.12), transparent); 
+    border-left: 4px solid var(--accent); 
+    padding: 18px; 
+    border-radius: 4px 12px 12px 4px; 
+    margin-top: 20px; 
+    position: relative;
+    border: 1px solid rgba(14, 165, 233, 0.1);
+    box-shadow: 0 5px 20px rgba(0,0,0,0.2);
+  }
+  .ai-diagnosis b { display: block; color: var(--accent); font-size: 12px; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 1.5px; }
+  .ai-fix { color: var(--success); font-weight: 700; margin-top: 10px; display: flex; align-items: center; gap: 8px; font-size: 11px; }
+  .ai-fix::before { content: '⚡'; }
+  
+  #scan-line { position: fixed; top: 0; left: 0; width: 100%; height: 2px; background: var(--accent); opacity: 0; pointer-events: none; z-index: 100; transition: opacity 0.3s; }
+  .scanning #scan-line { animation: scan 2s infinite linear; opacity: 0.5; }
+  @keyframes scan { from { top: 0% } to { top: 100% } }
+
+  .config-drawer { background: var(--card); padding: 12px; border-radius: 8px; border: 1px solid var(--border); margin-bottom: 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .config-drawer input { background: #000; border: 1px solid var(--border); color: var(--accent); padding: 8px; border-radius: 4px; font-family: 'Space Mono', monospace; font-size: 11px; outline: none; }
 </style>
 </head>
-<body>
-  <div class="logo">APEXON <span style="font-size:8px;opacity:0.6">v0.4.3</span></div>
-  <div style="font-size: 8px; color: var(--text-dim); margin-bottom: 12px; display: flex; gap: 10px;">
-    <span>🔍 Auto-Discovery</span>
-    <span>🧪 Smart Test Cases</span>
-    <span>🧠 AI Explainer</span>
+<body id="main-body">
+  <div id="scan-line"></div>
+  <div class="header">
+    <div class="logo-ring"><div style="width: 10px; height: 10px; background: var(--accent); border-radius: 50%;"></div></div>
+    <div class="title">Apexon <span style="font-size: 10px; vertical-align: middle; opacity: 0.5;">Jarvis Interface</span></div>
   </div>
-  <div class="stages">
-    <div id="stg-1" class="stage active"><span class="stage-lbl">DISCOVER</span></div>
-    <div id="stg-2" class="stage"><span class="stage-lbl">PREPARE</span></div>
-    <div id="stg-3" class="stage"><span class="stage-lbl">EXECUTE</span></div>
-    <div id="stg-4" class="stage"><span class="stage-lbl">REPORT</span></div>
+
+  <div class="status-hud">
+    <div class="status-label">Command Center Status</div>
+    <div id="status-text" class="status-text">SYSTEM ONLINE. READY FOR INSTRUCTION.</div>
   </div>
-  
-  <div class="config-box" style="padding:10px; opacity:0.6">
-    <div class="grid-2">
-      <div class="input-grp"><label>Base URL</label><input id="url-in" type="text" placeholder="Auto-Fill..."></div>
-      <div class="input-grp"><label>API Key</label><input id="key-in" type="password" placeholder="sk-..."></div>
-    </div>
+
+  <div class="config-drawer">
+    <input id="url-in" type="text" placeholder="BASE_URL_NULL">
+    <input id="key-in" type="password" placeholder="SECURE_KEY_HASH">
   </div>
-  <div class="summary">
-    <div class="stat"><b id="s-total">0</b><span>Selected</span></div>
-    <div class="stat"><b id="s-passed" style="color:var(--success)">0</b><span>Passed</span></div>
-    <div class="stat"><b id="s-failed" style="color:var(--error)">0</b><span>Failed</span></div>
-    <div class="stat"><b id="s-avg">0</b><span>ms Avg</span></div>
+
+  <div class="action-grid">
+    <button id="scan-btn">Initiate Scan</button>
+    <button id="run-btn">Run Analysis</button>
+    <button id="auto-btn">PROTOCOL: AUTO-REPAIR</button>
   </div>
-  <div class="controls">
-    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px">
-      <button id="scan-btn" style="background:var(--card); border:1px solid var(--accent); color:var(--accent)">1. SCAN</button>
-      <button id="auto-btn" style="background:var(--accent); color:#fff">2. TEST ALL</button>
-    </div>
-    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px; margin-top:8px">
-      <button id="run-btn" style="background: #334155; color: #fff;">EXECUTE SELECTED</button>
-      <button id="stop-btn" style="background:#ef4444; color:#fff; opacity:0.8">STOP</button>
-    </div>
+
+  <div class="stats-deck">
+    <div class="stat-card"><div class="stat-val" id="s-total">0</div><div class="stat-lbl">Endpoints</div></div>
+    <div class="stat-card"><div class="stat-val" style="color:var(--success)" id="s-passed">0</div><div class="stat-lbl">Secure</div></div>
+    <div class="stat-card"><div class="stat-val" style="color:var(--error)" id="s-failed">0</div><div class="stat-lbl">Breached</div></div>
+    <div class="stat-card"><div class="stat-val" id="s-avg">0</div><div class="stat-lbl">Latency</div></div>
   </div>
-  <div class="list" id="list"></div>
-  <div id="status-bar">Ready</div>
+
+  <div class="endpoint-list" id="list">
+    <div style="text-align: center; color: var(--text-dim); padding: 40px;">SCAN WORKSPACE TO BEGIN.</div>
+  </div>
+
 <script>
   (function() {
     const vscode = acquireVsCodeApi();
+    const statusText = document.getElementById('status-text');
+    const list = document.getElementById('list');
     const urlIn = document.getElementById('url-in');
     const keyIn = document.getElementById('key-in');
-    const stBar = document.getElementById('status-bar');
-    const list = document.getElementById('list');
+
     let endpoints = [];
     let results = [];
 
-    function save() {
-      vscode.postMessage({ command: 'saveConfig', baseURL: urlIn.value, apiKey: keyIn.value });
-    }
-    urlIn.addEventListener('change', save);
-    keyIn.addEventListener('change', save);
+    const updateStatus = (text, active = true) => {
+      statusText.classList.remove('typing');
+      void statusText.offsetWidth; 
+      statusText.innerText = text;
+      statusText.style.width = '0';
+      statusText.style.animation = 'typing 2s steps(40, end) forwards, blink 0.75s infinite';
+      document.getElementById('main-body').classList.toggle('scanning', active);
+    };
 
-    document.getElementById('auto-btn').addEventListener('click', function() {
-      vscode.postMessage({ command: 'autoPilot', baseURL: urlIn.value, apiKey: keyIn.value });
-    });
+    urlIn.onchange = () => vscode.postMessage({ command: 'saveConfig', baseURL: urlIn.value, apiKey: keyIn.value });
+    keyIn.onchange = () => vscode.postMessage({ command: 'saveConfig', baseURL: urlIn.value, apiKey: keyIn.value });
 
-    document.getElementById('scan-btn').addEventListener('click', function() {
-      vscode.postMessage({ command: 'autoDiscover' });
-    });
-
-    document.getElementById('stop-btn').addEventListener('click', function() {
-      vscode.postMessage({ command: 'stop' });
-      list.innerHTML = '<div style="text-align:center;padding:20px;color:gray">Discovery complete. Ready to execute.</div>';
-    });
-
-    document.getElementById('run-btn').addEventListener('click', function() {
-      const idxs = [];
-      document.querySelectorAll('.chk:checked').forEach(c => idxs.push(parseInt(c.dataset.idx)));
-      vscode.postMessage({ command: 'run', baseURL: urlIn.value, apiKey: keyIn.value, indices: idxs });
-    });
-
+    document.getElementById('scan-btn').onclick = () => vscode.postMessage({ command: 'autoDiscover' });
+    document.getElementById('auto-btn').onclick = () => vscode.postMessage({ command: 'autoPilot', baseURL: urlIn.value, apiKey: keyIn.value });
+    document.getElementById('run-btn').onclick = () => {
+      const idxs = Array.from(document.querySelectorAll('.chk:checked')).map(c => parseInt(c.dataset.idx));
+      const overrides = {};
+      idxs.forEach(idx => {
+        const inputs = document.querySelectorAll('.override-' + idx);
+        if (inputs.length) {
+          overrides[idx] = {};
+          inputs.forEach(input => { if (input.value) overrides[idx][input.dataset.param] = input.value; });
+        }
+      });
+      vscode.postMessage({ command: 'run', baseURL: urlIn.value, apiKey: keyIn.value, indices: idxs, overrides });
+    };
 
     window.addEventListener('message', event => {
       const data = event.data;
-      switch (data.command) {
-        case 'updateConfig':
-          urlIn.value = data.baseURL || '';
-          keyIn.value = data.apiKey || '';
-          break;
-        case 'status':
-          stBar.innerText = data.text;
-          stBar.style.display = data.active === false ? 'none' : 'block';
-          if (data.text.includes('Discovery')) setStage(1);
-          if (data.text.includes('Preparing')) setStage(2);
-          if (data.text.includes('Executing')) setStage(3);
-          break;
-        case 'scanResult':
-          endpoints = data.endpoints || [];
-          results = [];
-          setStage(1);
-          render();
-          break;
-        case 'partialResult':
-          results = data.results || [];
-          setStage(4);
-          render();
-          break;
-        case 'error':
-          alert(data.text);
-          break;
-      }
+      if (data.command === 'updateConfig') { urlIn.value = data.baseURL || ''; keyIn.value = data.apiKey || ''; }
+      if (data.command === 'status') updateStatus(data.text, data.active !== false);
+      if (data.command === 'scanResult') { endpoints = data.endpoints || []; results = []; render(); }
+      if (data.command === 'partialResult') { results = data.results || []; render(); }
     });
 
-    function setStage(idx) {
-      document.querySelectorAll('.stage').forEach((s, i) => s.classList.toggle('active', (i+1) <= idx));
-    }
-
     function render() {
-      if (!endpoints || !endpoints.length) {
-        list.innerHTML = '<div style="text-align:center;padding:20px;color:gray">Discovery complete. Ready to execute.</div>';
-        return;
-      }
+      if (!endpoints.length) { list.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-dim)">NO TARGETS FOUND.</div>'; return; }
       const grps = {};
       let p=0, f=0, tt=0, count=0;
       endpoints.forEach((ep, i) => {
-        const file = ep.file.split(/[\\\\/]/).pop() || 'Unknown';
+        const file = ep.file.split(/[\/\\\\]/).pop();
         if (!grps[file]) grps[file] = [];
         grps[file].push({ep, i});
       });
-
       let html = '';
       Object.keys(grps).forEach(fN => {
-        html += '<div class="group-header">' + fN + '</div>';
+        html += '<div class="group-title">' + fN + '</div>';
         grps[fN].forEach(({ ep, i }) => {
           const res = results[i];
           if (res?.passed) p++; else if (res) f++;
-          if (res?.responseTime) { tt += res.responseTime; count++; }
-
-          html += '<div class="item" id="i-' + i + '">' +
-            '<div class="item-head">' +
-              '<input type="checkbox" class="chk" data-idx="' + i + '" checked onclick="event.stopPropagation(); updateSum()">' +
-              '<div style="flex:1; display:flex; align-items:center; gap:10px" onclick="document.getElementById(\\'i-' + i + '\\').classList.toggle(\\'open\\')">' +
-                '<span class="method">' + ep.method + '</span>' +
-                '<span class="path">' + ep.path + '</span>' +
-                '<span class="tag ' + (res?.passed ? 'passed' : (res ? 'failed' : '')) + '">' + (res ? (res.status || res.statusText || 'ERR') : '') + '</span>' +
-                (res?.responseTime ? '<span style="font-size:8px;color:gray">' + res.responseTime + 'ms</span>' : '') +
-              '</div>' +
-            '</div>' +
-            '<div class="details">' +
-              (res?.classification ? '<div class="err-box"><div style="margin-bottom:4px; font-weight:bold; color:var(--error); font-size:11px">' + res.classification.reason + '</div><div style="font-size:10px; line-height:1.4">👉 ' + res.classification.fix + '</div></div>' : '') +
-              '<div style="font-size:8px;color:gray;margin-bottom:4px;opacity:0.6">Endpoint Target: ' + (res?.fullUrl || '--') + '</div>' +
-              '<div style="margin-top:8px; font-weight:bold; font-size:9px; color:var(--text-dim); text-transform:uppercase">Server Response</div>' +
-              '<pre>' + JSON.stringify(res?.responseData || {}, null, 2) + '</pre>' +
-              (res?.ai ? '<div style="background:rgba(99,102,241,0.15); border: 1px solid var(--accent); padding:10px; border-radius:6px; margin-top:12px"><b>🧠 AI DIAGNOSIS</b><br>' + res.ai.why + '<br><i style="display:block; margin-top:4px; color:var(--highlight)">' + res.ai.fix + '</i></div>' : '') +
-            '</div>' +
-          '</div>';
+          if (res?.durationMs) { tt += res.durationMs; count++; }
+          const params = ep.path.match(/\{([^}]+)\}|:([a-zA-Z0-9_]+)/g) || [];
+          html += \`
+            <div class="item" id="i-\${i}">
+              <div class="item-head">
+                <input type="checkbox" class="chk" data-idx="\${i}" checked onclick="event.stopPropagation()">
+                <div style="flex:1; display:flex; align-items:center; gap:10px" onclick="document.getElementById('i-\${i}').classList.toggle('open')">
+                  <span class="method-tag p-\${ep.method}">\${ep.method}</span>
+                  <span class="path-text">\${ep.path}</span>
+                  \${res ? \`<div class="status-dot \${res.passed ? 's-pass' : 's-fail'}"></div>\` : ''}
+                </div>
+              </div>
+              <div class="details">
+                \${params.length ? \`
+                  <div class="param-box">
+                    <div class="param-title">Override Security Parameters</div>
+                    \${params.map(p => {
+                      const name = p.startsWith('{') ? p.slice(1,-1) : p.slice(1);
+                      return \`<input class="param-input override-\${i}" data-param="\${name}" placeholder="Value for \${p}">\`;
+                    }).join('')}
+                  </div>
+                \` : ''}
+                \${res?.classification ? \`<div style="color:var(--error); margin-bottom:10px; font-weight:700">ALERT: \${res.classification.reason}</div>\` : ''}
+                <div style="font-size:10px; color:var(--text-dim); margin-bottom:8px; display:flex; justify-content:space-between">DATA STREAM INDICATOR <span>SECURE_ENCRYPTION_v1.2</span></div>
+                <pre>\${JSON.stringify(res?.responseData || {}, null, 2)}</pre>
+                \${res?.ai ? \`
+                  <div class="ai-diagnosis">
+                    <b>JARVIS DIAGNOSTIC ANALYSIS</b>
+                    <div style="color: var(--text); opacity: 0.9; margin-bottom: 10px;">\${res.ai.why}</div>
+                    <div class="ai-fix">PROTOCOL REPAIR: \${res.ai.fix}</div>
+                  </div>
+                \` : ''}
+              </div>
+            </div>
+          \`;
         });
       });
       list.innerHTML = html;
+      document.getElementById('s-total').innerText = endpoints.length;
       document.getElementById('s-passed').innerText = p;
       document.getElementById('s-failed').innerText = f;
       document.getElementById('s-avg').innerText = count > 0 ? Math.round(tt/count) : 0;
-      updateSum();
     }
-
-    window.updateSum = function() {
-      document.getElementById('s-total').innerText = document.querySelectorAll('.chk:checked').length;
-    };
   })();
 </script>
 </body>

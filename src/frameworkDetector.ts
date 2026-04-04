@@ -19,11 +19,13 @@ export async function detectFramework(): Promise<Framework> {
   }
 
   // 2. Python (FastAPI/Flask): Check requirements.txt or search source for imports
-  const reqTxt = path.join(root, 'requirements.txt');
-  if (fs.existsSync(reqTxt)) {
-    const content = fs.readFileSync(reqTxt, 'utf8').toLowerCase();
-    if (content.includes('fastapi')) return 'FastAPI';
-    if (content.includes('flask')) return 'Flask';
+  const reqLocations = [path.join(root, 'requirements.txt'), path.join(root, 'api', 'requirements.txt')];
+  for (const reqTxt of reqLocations) {
+    if (fs.existsSync(reqTxt)) {
+      const content = fs.readFileSync(reqTxt, 'utf8').toLowerCase();
+      if (content.includes('fastapi')) return 'FastAPI';
+      if (content.includes('flask')) return 'Flask';
+    }
   }
 
   // 3. Node.js (Express): Check package.json dependencies

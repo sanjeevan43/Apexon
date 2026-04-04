@@ -41,13 +41,10 @@ const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const vscode = __importStar(require("vscode"));
 const axios_1 = __importDefault(require("axios"));
-// Cache for file-level prefixes
-const FILE_PREFIXES = {};
+// No longer using global cache to avoid cross-scan pollution.
 /** Captures router prefixes: app.include_router(main_router, prefix="/api/v1"), app.use("/api", router) */
 async function scanForPrefixes(files) {
-    // Reset cache
-    for (const key in FILE_PREFIXES)
-        delete FILE_PREFIXES[key];
+    const prefixes = {};
     // Group 1: Optional router variable, Group 2: The prefix string
     const PREFIX_REGEX = /(?:\.include_router|\.use|\.register_blueprint)\s*\(\s*([^,()]+)?\s*,?\s*(?:prefix\s*=\s*)?['"`]([^'"`\s?#]+)['"`]/gi;
     for (const file of files) {
@@ -59,16 +56,17 @@ async function scanForPrefixes(files) {
                 const prefix = match[2];
                 const cleaned = prefix.endsWith('/') ? prefix.slice(0, -1) : prefix;
                 // Store by global, by prefix tail, and by router variable name if found
-                FILE_PREFIXES['__global__'] = cleaned;
+                prefixes['__global__'] = cleaned;
                 const likelyFile = cleaned.split('/').filter(Boolean).pop() || '';
                 if (likelyFile)
-                    FILE_PREFIXES[likelyFile] = cleaned;
+                    prefixes[likelyFile] = cleaned;
                 if (routerVar)
-                    FILE_PREFIXES[routerVar] = cleaned;
+                    prefixes[routerVar] = cleaned;
             }
         }
         catch { }
     }
+    return prefixes;
 }
 /**
  * Hyper-aggressive patterns for endpoint detection
@@ -76,8 +74,8 @@ async function scanForPrefixes(files) {
 const PATTERNS = [
     // Express/FastAPI Style: app.get("/"), @router.post("/"), @app.route("/"), router.put("/")
     /(?:@)?(?:app|router|server|route|api|blueprint|controller)?\.?(get|post|put|delete|patch|all)\s*\(\s*['"`]([^'"`\s?#]+)['"`]/gi,
-    // Decorator Style: @get("/"), @Post("/")
-    /@(get|post|put|delete|patch)\s*\(\s*['"`]([^'"`\s?#]+)['"`]/gi,
+    // Decorator Style (NestJS/TypeORM/Spring): @Get("/"), @PostMapping("/"), etc.
+    /@(Get|Post|Put|Delete|Patch|Options|Head|All|GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping)\s*\(\s*(?:value\s*=\s*)?['"`]([^'"`\s?#]+)['"`]/gi,
     // Flask Style with methods: @app.route("/path", methods=["POST"])
     /@(?:app|router|server|api)\.route\s*\(\s*['"`]([^'"`\s?#]+)['"`](?:.*methods\s*=\s*\[\s*(?:['"`](.*?)['"`],?\s*)+\])?/gi,
     // Generic Fetch/Axios calls (for frontends or internal calls)
@@ -87,12 +85,13 @@ const SUPPORTED_EXTS = new Set(['.js', '.ts', '.py', '.swift', '.go', '.java', '
 async function scanFile(filePath) {
     try {
         const content = fs.readFileSync(filePath, 'utf8');
+        const lines = content.split('\n');
+        const getLineNum = (idx) => content.substring(0, idx).split('\n').length;
         const results = [];
         for (const regex of PATTERNS) {
             let match;
             regex.lastIndex = 0;
             while ((match = regex.exec(content)) !== null) {
-                // match[1] might be method, match[2] might be path, or vice versa depending on regex
                 let method = 'GET';
                 let path = '';
                 if (match.length === 3) {
@@ -103,7 +102,7 @@ async function scanFile(filePath) {
                     path = match[1];
                 }
                 if (path && path.startsWith('/')) {
-                    results.push({ method, path, file: filePath });
+                    results.push({ method, path, file: filePath, line: getLineNum(match.index) });
                 }
             }
         }
@@ -169,9 +168,9 @@ async function scanSwagger(baseURL, manualSource) {
 async function scanWorkspace(baseURL, openapiSource) {
     const endpoints = [];
     const seen = new Set();
-    // Reset cache for fresh scan
-    for (const key in FILE_PREFIXES)
-        delete FILE_PREFIXES[key];
+    // Reset seen for fresh scan
+    endpoints.length = 0;
+    seen.clear();
     if (baseURL) {
         const swEndpoints = await scanSwagger(baseURL, openapiSource);
         for (const ep of swEndpoints) {
@@ -189,20 +188,23 @@ async function scanWorkspace(baseURL, openapiSource) {
         files.push(active.uri);
     }
     // First pass: Find prefixes
-    await scanForPrefixes(files);
-    for (const file of files) {
-        const found = await scanFile(file.fsPath);
-        // Apply prefixes
+    const prefixes = await scanForPrefixes(files);
+    // Parallelized Scan for maximum performance ("prolamins" optimization)
+    const allFound = await Promise.all(files.map(f => scanFile(f.fsPath)));
+    for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const found = allFound[i];
         const fileName = path.basename(file.fsPath, path.extname(file.fsPath)).toLowerCase();
-        const prefix = FILE_PREFIXES[fileName] || '';
+        const prefix = prefixes[fileName] || '';
         for (const ep of found) {
             if (prefix && !ep.path.startsWith(prefix)) {
-                ep.path = prefix + (ep.path.startsWith('/') ? ep.path : '/' + ep.path);
+                ep.path = (prefix.startsWith('/') ? prefix : '/' + prefix) + (ep.path.startsWith('/') ? ep.path : '/' + ep.path);
             }
-            else if (FILE_PREFIXES['__global__'] && !ep.path.startsWith(FILE_PREFIXES['__global__'])) {
-                // Fallback to global prefix if no file-specific prefix found
-                ep.path = FILE_PREFIXES['__global__'] + (ep.path.startsWith('/') ? ep.path : '/' + ep.path);
+            else if (prefixes['__global__'] && !ep.path.startsWith(prefixes['__global__'])) {
+                const globalPrefix = prefixes['__global__'];
+                ep.path = (globalPrefix.startsWith('/') ? globalPrefix : '/' + globalPrefix) + (ep.path.startsWith('/') ? ep.path : '/' + ep.path);
             }
+            ep.path = ep.path.replace(/\/+/g, '/');
             const key = `${ep.method}:${ep.path}`;
             if (!seen.has(key)) {
                 seen.add(key);

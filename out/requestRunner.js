@@ -43,8 +43,10 @@ async function runRequest(endpoint, baseURL, timeoutMs, requestBody, overriddenP
             passed: response.status >= 200 && response.status <= 299,
             errorCode: null,
             requestBody: actualBody,
+            requestHeaders: headers,
             responseData: response.data,
-            fullUrl: url, // Store full URL
+            responseHeaders: response.headers,
+            fullUrl: url,
         };
     }
     catch (err) {
@@ -58,7 +60,9 @@ async function runRequest(endpoint, baseURL, timeoutMs, requestBody, overriddenP
             passed: false,
             errorCode,
             requestBody: actualBody,
+            requestHeaders: headers,
             responseData: axiosErr.response?.data || null,
+            responseHeaders: axiosErr.response?.headers || null,
             fullUrl: url,
         };
     }
