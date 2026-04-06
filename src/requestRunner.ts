@@ -15,14 +15,9 @@ export interface TestResult {
   fullUrl: string;
 }
 
-/** Normalize path with placeholder values (e.g., :id -> 1) */
+/** Normalize path - no longer using hardcoded defaults like '1' to avoid fake testing */
 function normalizePath(p: string): string {
-  return p
-    .replace(/\{userId\}/g, '1')
-    .replace(/\{id\}/g, '1')
-    .replace(/\{slug\}/g, 'test')
-    .replace(/\{[^}]+\}/g, '1')   // Any remaining {param}
-    .replace(/:([a-zA-Z_][a-zA-Z0-9_]*)/g, '1'); // :param style
+  return p;
 }
 
 /** Executes a single request and measures performance */

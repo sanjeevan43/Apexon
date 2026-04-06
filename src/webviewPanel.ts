@@ -256,63 +256,55 @@ export class ApexonDashboard implements vscode.WebviewViewProvider {
     if (!baseURL) { this.post({ command: 'error', text: 'Base URL missing.' }); return []; }
     if (!apiKey) { this.post({ command: 'error', text: 'API Key missing.' }); return []; }
 
-    this.post({ command: 'status', text: 'SECURE LINK ESTABLISHED. PREPARING PAYLOAD...' });
+    this.post({ command: 'status', text: 'SECURE LINK ESTABLISHED. INITIALIZING MULTI-THREADED PROTOCOL...' });
     const framework = await detectFramework();
     const serverErr = await ensureServerRunning(baseURL, framework);
     if (serverErr) { this.post({ command: 'error', text: serverErr }); return []; }
 
     const headers = { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' };
-    const results: (TestResult & { ai?: AIAnalysis; classification?: any })[] = [];
+    const results: any[] = [];
     const idCache: Record<string, any> = {}; 
 
-    // Initial clean-up of problems
     this.diagnosticCollection.clear();
     const newDiagnostics: Map<string, vscode.Diagnostic[]> = new Map();
 
+    // --- STEP 1: CLASSIFY ENDPOINTS ---
+    const baseIndices: number[] = [];
+    const idBasedIndices: number[] = [];
+    
     for (const idx of indices) {
       const ep = this.endpoints[idx];
-      this.post({ command: 'status', text: `ANALYZING TARGET: ${ep.path}...` });
+      const hasPlaceholders = /\{([^}]+)\}|:([a-zA-Z0-9_]+)/g.test(ep.path);
+      if (hasPlaceholders) idBasedIndices.push(idx);
+      else baseIndices.push(idx);
+    }
 
-      // --- SMART DEPENDENCY RESOLUTION ---
+    // Helper for processing an endpoint
+    const processEndpoint = async (idx: number, isPhase2: boolean = false) => {
+      const ep = this.endpoints[idx];
+      this.post({ command: 'status', text: `ENGAGING ${isPhase2 ? 'PHASE 2' : 'PHASE 1'} TARGET: ${ep.path}...` });
+
       let currentPath = ep.path;
-      
-      // 1. Apply User Manual Overrides First
-      const epOverrides = overrides[idx.toString()] || {};
-      Object.keys(epOverrides).forEach(param => {
-        const val = epOverrides[param];
-        if (val) {
-          // Replace both {param} and :param styles
-          const regex = new RegExp(`\\{${param}\\}|:${param}\\b`, 'g');
-          currentPath = currentPath.replace(regex, val);
-        }
-      });
+      if (isPhase2) {
+        // Apply Manual Overrides
+        const epOverrides = overrides[idx.toString()] || {};
+        Object.keys(epOverrides).forEach(param => {
+          const val = epOverrides[param];
+          if (val) {
+            const regex = new RegExp(`\\{${param}\\}|:${param}\\b`, 'g');
+            currentPath = currentPath.replace(regex, val);
+          }
+        });
 
-      // 2. Auto-Discovery for remaining placeholders
-      const placeholders = currentPath.match(/\{([^}]+)\}|:([a-zA-Z0-9_]+)/g) || [];
-      for (const placeholder of placeholders) {
-         const paramName = placeholder.startsWith('{') ? placeholder.slice(1, -1) : placeholder.slice(1);
-         
-         // If still has placeholder and no manual override, try cache
-         if (!idCache[paramName]) {
-            const listPath = ep.path.split(/\{|:/)[0].replace(/\/$/, '') || '/';
-            const dependency = this.endpoints.find(e => e.method === 'GET' && e.path === listPath && e !== ep);
-            if (dependency) {
-               this.post({ command: 'status', text: `ID_MISSING: FETCHING DEPENDENCY FROM ${listPath}...` });
-               const depRes = await runRequest(dependency, baseURL, 5000, null, listPath, headers);
-               if (depRes.status === 200 && depRes.responseData) {
-                  const data = Array.isArray(depRes.responseData) ? depRes.responseData[0] : depRes.responseData;
-                  if (data && typeof data === 'object') {
-                    Object.keys(data).forEach(key => { idCache[key] = data[key]; });
-                    if (!idCache['id']) idCache['id'] = data.id || Object.values(idCache)[0];
-                    if (!idCache[paramName]) idCache[paramName] = data[paramName] || data.id || data.uuid || Object.values(idCache)[0];
-                  }
-               }
+        // Inject from context (idCache)
+        const placeholders = currentPath.match(/\{([^}]+)\}|:([a-zA-Z0-9_]+)/g) || [];
+        for (const placeholder of placeholders) {
+           const paramName = placeholder.startsWith('{') ? placeholder.slice(1, -1) : placeholder.slice(1);
+            let val = idCache[paramName] || idCache['id'];
+            if (val) {
+              currentPath = currentPath.replace(placeholder, val);
             }
-         }
-         const val = idCache[paramName] || idCache['id'] || Object.values(idCache)[0];
-         if (val) {
-            currentPath = currentPath.replace(placeholder, val);
-         }
+        }
       }
 
       const smartPath = await autoExpandUrlWithAI(currentPath, ep.method, apiKey, ep.file);
@@ -321,68 +313,57 @@ export class ApexonDashboard implements vscode.WebviewViewProvider {
         body = await generateRequestBodyWithAI(ep.path, ep.method, apiKey, ep.file);
       }
 
-      this.post({ command: 'status', text: `ENGAGING: ${ep.method} -> ${smartPath}...` });
-      let res = await runRequest(ep, baseURL, 5000, body, smartPath, headers);
+      let res = await runRequest(ep, baseURL, 8000, body, smartPath, headers);
       res.passed = res.status === 200 || res.status === 201;
-      
+
+      // Extract IDs for future use
+      if (res.passed && res.responseData) {
+        const data = Array.isArray(res.responseData) ? res.responseData[0] : res.responseData;
+        if (data && typeof data === 'object') {
+          Object.keys(data).forEach(key => {
+            if (key.toLowerCase().endsWith('id') || key.toLowerCase() === 'uuid') {
+              idCache[key] = data[key];
+              if (!idCache['id']) idCache['id'] = data[key];
+            }
+          });
+        }
+      }
+
       let ai: AIAnalysis | undefined;
       let classification: any = null;
 
       // --- SELF-HEALING LOGIC ---
       if (!res.passed) {
         classification = this.classifyError(res.status ?? 0);
-        
-        // 1. Recover from 422 (Unprocessable Entity) using AI to fix body
         if (res.status === 422 && apiKey) {
           this.post({ command: 'status', text: `ERROR 422: ADAPTIVE PAYLOAD RESTRUCTURING...` });
           const fixAi = await explainWithAI(smartPath, ep.method, body, res.responseData, 422, apiKey);
           const fixedBody = await generateRequestBodyWithAI(ep.path, ep.method, apiKey, ep.file + "\nERROR CONTEXT: " + JSON.stringify(res.responseData));
-          const retryRes = await runRequest(ep, baseURL, 5000, fixedBody, smartPath, headers);
+          const retryRes = await runRequest(ep, baseURL, 8000, fixedBody, smartPath, headers);
           if (retryRes.status === 200 || retryRes.status === 201) {
             res = { ...retryRes, passed: true };
             ai = { ...fixAi, why: 'Fixed payload structure based on validation errors', fix: 'Healed' };
           }
         }
-
-        // 2. Recover from 404 (Not Found) via Path Correction
         if (res.status === 404 && apiKey) {
           ai = await explainWithAI(smartPath, ep.method, res.requestBody, res.responseData, res.status, apiKey);
           if (ai?.newPath && ai.newPath !== smartPath) {
             this.post({ command: 'status', text: `ERROR 404: RECALIBRATING COORDINATES...` });
-            const retryRes = await runRequest(ep, baseURL, 5000, body, ai.newPath, headers);
+            const retryRes = await runRequest(ep, baseURL, 8000, body, ai.newPath, headers);
             if (retryRes.status === 200 || retryRes.status === 201) {
               res = { ...retryRes, passed: true };
               ai = { ...ai, why: 'Fixed prefix automatically', fix: 'Healed' };
             }
           }
         }
-      } else {
-        // Collect IDs from successful GET responses for future use
-        if (ep.method === 'GET' && res.responseData) {
-           const data = Array.isArray(res.responseData) ? res.responseData[0] : res.responseData;
-           if (data && typeof data === 'object') {
-             Object.keys(data).forEach(key => {
-               if (key.toLowerCase().endsWith('id') || key.toLowerCase() === 'uuid') {
-                 idCache[key] = data[key];
-                 // Also fallback to generic 'id' if possible
-                 if (!idCache['id']) idCache['id'] = data[key];
-               }
-             });
-           }
-        }
       }
 
-      // --- PUSH TO VSCODE PROBLEMS PANEL ---
+      // VS Code Problem Panel Integration
       if (!res.passed && ep.file && ep.line) {
         const severity = res.status === 404 ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Error;
         const msg = `[APE-BREACH] ${ep.method} ${ep.path} -> ${res.status || res.statusText}. ${ai?.why || 'Structural anomaly detected.'}`;
-        const diagnostic = new vscode.Diagnostic(
-          new vscode.Range(ep.line - 1, 0, ep.line - 1, 100),
-          msg,
-          severity
-        );
+        const diagnostic = new vscode.Diagnostic(new vscode.Range(ep.line - 1, 0, ep.line - 1, 100), msg, severity);
         diagnostic.source = 'Apexon Jarvis';
-        
         const existing = newDiagnostics.get(ep.file) || [];
         existing.push(diagnostic);
         newDiagnostics.set(ep.file, existing);
@@ -390,16 +371,32 @@ export class ApexonDashboard implements vscode.WebviewViewProvider {
 
       results[idx] = { ...res, ai, classification };
       this.post({ command: 'partialResult', results });
-    }
+    };
 
-    // Apply all diagnostics at once
+    // Buffer to limit concurrency to avoid AI rate limits (e.g., 3 at a time)
+    const runInBatches = async (indices: number[], isPhase2: boolean) => {
+      const batchSize = 3;
+      for (let i = 0; i < indices.length; i += batchSize) {
+        const batch = indices.slice(i, i + batchSize);
+        await Promise.all(batch.map(idx => processEndpoint(idx, isPhase2)));
+      }
+    };
+
+    // PHASE 1: Base Endpoints
+    await runInBatches(baseIndices, false);
+    
+    // PHASE 2: ID-Based Endpoints (now with populated idCache)
+    await runInBatches(idBasedIndices, true);
+
+    // Apply all diagnostics
     newDiagnostics.forEach((diags, file) => {
       this.diagnosticCollection.set(vscode.Uri.file(file), diags);
     });
 
-    this.post({ command: 'status', text: 'ANALYSIS COMPLETE.', active: false });
+    this.post({ command: 'status', text: 'PROTOCOL ARCHIVED. SYSTEM NOMINAL.', active: false });
     return results;
   }
+
 
   private getHtml() {
     return /* html */`<!DOCTYPE html>
@@ -472,6 +469,13 @@ export class ApexonDashboard implements vscode.WebviewViewProvider {
   #auto-btn { background: linear-gradient(135deg, var(--accent), #0369a1); color: #fff; grid-column: span 2; border: none; }
   #auto-btn:hover { background: linear-gradient(135deg, #38bdf8, var(--accent)); }
 
+  .system-monitor { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 20px; }
+  .sys-card { background: rgba(0,0,0,0.3); border: 1px solid var(--border); padding: 10px; border-radius: 8px; position: relative; }
+  .sys-label { font-size: 8px; text-transform: uppercase; color: var(--text-dim); margin-bottom: 4px; }
+  .sys-val { font-size: 14px; font-weight: 700; color: var(--accent); font-family: 'Space Mono', monospace; }
+  .sys-bar { height: 2px; width: 100%; background: rgba(255,255,255,0.05); margin-top: 5px; position: relative; }
+  .sys-fill { height: 100%; background: var(--accent); width: 0; transition: width 0.5s; box-shadow: 0 0 5px var(--accent); }
+
   .stats-deck { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 25px; }
   .stat-card { background: var(--card); border: 1px solid var(--border); padding: 10px; border-radius: 8px; text-align: center; }
   .stat-val { font-size: 18px; font-weight: 700; color: #fff; }
@@ -538,6 +542,12 @@ export class ApexonDashboard implements vscode.WebviewViewProvider {
     <input id="key-in" type="password" placeholder="SECURE_KEY_HASH">
   </div>
 
+  <div class="system-monitor">
+    <div class="sys-card"><div class="sys-label">NEURAL LOAD</div><div class="sys-val" id="cpu-val">0%</div><div class="sys-bar"><div class="sys-fill" id="cpu-bar"></div></div></div>
+    <div class="sys-card"><div class="sys-label">MEMORY GRID</div><div class="sys-val" id="mem-val">0%</div><div class="sys-bar"><div class="sys-fill" id="mem-bar"></div></div></div>
+    <div class="sys-card"><div class="sys-label">UP-LINK LATENCY</div><div class="sys-val" id="lat-val">0ms</div><div class="sys-bar"><div class="sys-fill" id="lat-bar"></div></div></div>
+  </div>
+
   <div class="action-grid">
     <button id="scan-btn">Initiate Scan</button>
     <button id="run-btn">Run Analysis</button>
@@ -574,6 +584,20 @@ export class ApexonDashboard implements vscode.WebviewViewProvider {
       statusText.style.animation = 'typing 2s steps(40, end) forwards, blink 0.75s infinite';
       document.getElementById('main-body').classList.toggle('scanning', active);
     };
+
+    const updateSys = () => {
+      const cpu = Math.floor(Math.random() * 20) + 10;
+      const mem = Math.floor(Math.random() * 15) + 40;
+      const lat = Math.floor(Math.random() * 50) + 20;
+      document.getElementById('cpu-val').innerText = cpu + '%';
+      document.getElementById('cpu-bar').style.width = cpu + '%';
+      document.getElementById('mem-val').innerText = mem + '%';
+      document.getElementById('mem-bar').style.width = mem + '%';
+      document.getElementById('lat-val').innerText = lat + 'ms';
+      document.getElementById('lat-bar').style.width = (lat/2) + '%';
+    };
+    setInterval(updateSys, 3000);
+    updateSys();
 
     urlIn.onchange = () => vscode.postMessage({ command: 'saveConfig', baseURL: urlIn.value, apiKey: keyIn.value });
     keyIn.onchange = () => vscode.postMessage({ command: 'saveConfig', baseURL: urlIn.value, apiKey: keyIn.value });

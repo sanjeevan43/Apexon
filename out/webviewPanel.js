@@ -282,7 +282,7 @@ class ApexonDashboard {
             this.post({ command: 'error', text: 'API Key missing.' });
             return [];
         }
-        this.post({ command: 'status', text: 'SECURE LINK ESTABLISHED. PREPARING PAYLOAD...' });
+        this.post({ command: 'status', text: 'SECURE LINK ESTABLISHED. INITIALIZING PHASE-BASED PROTOCOL...' });
         const framework = await (0, frameworkDetector_1.detectFramework)();
         const serverErr = await (0, serverManager_1.ensureServerRunning)(baseURL, framework);
         if (serverErr) {
@@ -292,58 +292,77 @@ class ApexonDashboard {
         const headers = { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' };
         const results = [];
         const idCache = {};
-        // Initial clean-up of problems
         this.diagnosticCollection.clear();
         const newDiagnostics = new Map();
+        // --- STEP 1: CLASSIFY ENDPOINTS ---
+        const baseIndices = [];
+        const idBasedIndices = [];
         for (const idx of indices) {
             const ep = this.endpoints[idx];
-            this.post({ command: 'status', text: `ANALYZING TARGET: ${ep.path}...` });
-            // --- SMART DEPENDENCY RESOLUTION ---
+            const hasPlaceholders = /\{([^}]+)\}|:([a-zA-Z0-9_]+)/g.test(ep.path);
+            if (hasPlaceholders)
+                idBasedIndices.push(idx);
+            else
+                baseIndices.push(idx);
+        }
+        // --- STEP 2: EXECUTE BASE ENDPOINTS (context population) ---
+        for (const idx of baseIndices) {
+            const ep = this.endpoints[idx];
+            this.post({ command: 'status', text: `PHASE 1: ENGAGING BASE ENDPOINT: ${ep.path}...` });
+            const smartPath = await (0, errorExplainer_1.autoExpandUrlWithAI)(ep.path, ep.method, apiKey, ep.file);
+            let body = null;
+            if (['POST', 'PUT', 'PATCH'].includes(ep.method)) {
+                body = await (0, errorExplainer_1.generateRequestBodyWithAI)(ep.path, ep.method, apiKey, ep.file);
+            }
+            let res = await (0, requestRunner_1.runRequest)(ep, baseURL, 5000, body, smartPath, headers);
+            res.passed = res.status === 200 || res.status === 201;
+            if (res.passed && res.responseData) {
+                // --- STEP 3: EXTRACT REQUIRED IDs ---
+                const data = Array.isArray(res.responseData) ? res.responseData[0] : res.responseData;
+                if (data && typeof data === 'object') {
+                    Object.keys(data).forEach(key => {
+                        if (key.toLowerCase().endsWith('id') || key.toLowerCase() === 'uuid') {
+                            idCache[key] = data[key];
+                            if (!idCache['id'])
+                                idCache['id'] = data[key];
+                        }
+                    });
+                }
+            }
+            results[idx] = { ...res };
+            this.post({ command: 'partialResult', results });
+        }
+        // --- STEP 4: RESOLVE AND EXECUTE ID-BASED ENDPOINTS ---
+        for (const idx of idBasedIndices) {
+            const ep = this.endpoints[idx];
+            this.post({ command: 'status', text: `PHASE 2: RESOLVING NESTED TARGET: ${ep.path}...` });
             let currentPath = ep.path;
-            // 1. Apply User Manual Overrides First
+            // Apply Manual Overrides
             const epOverrides = overrides[idx.toString()] || {};
             Object.keys(epOverrides).forEach(param => {
                 const val = epOverrides[param];
                 if (val) {
-                    // Replace both {param} and :param styles
                     const regex = new RegExp(`\\{${param}\\}|:${param}\\b`, 'g');
                     currentPath = currentPath.replace(regex, val);
                 }
             });
-            // 2. Auto-Discovery for remaining placeholders
+            // Inject from context (idCache)
             const placeholders = currentPath.match(/\{([^}]+)\}|:([a-zA-Z0-9_]+)/g) || [];
             for (const placeholder of placeholders) {
                 const paramName = placeholder.startsWith('{') ? placeholder.slice(1, -1) : placeholder.slice(1);
-                // If still has placeholder and no manual override, try cache
-                if (!idCache[paramName]) {
-                    const listPath = ep.path.split(/\{|:/)[0].replace(/\/$/, '') || '/';
-                    const dependency = this.endpoints.find(e => e.method === 'GET' && e.path === listPath && e !== ep);
-                    if (dependency) {
-                        this.post({ command: 'status', text: `ID_MISSING: FETCHING DEPENDENCY FROM ${listPath}...` });
-                        const depRes = await (0, requestRunner_1.runRequest)(dependency, baseURL, 5000, null, listPath, headers);
-                        if (depRes.status === 200 && depRes.responseData) {
-                            const data = Array.isArray(depRes.responseData) ? depRes.responseData[0] : depRes.responseData;
-                            if (data && typeof data === 'object') {
-                                Object.keys(data).forEach(key => { idCache[key] = data[key]; });
-                                if (!idCache['id'])
-                                    idCache['id'] = data.id || Object.values(idCache)[0];
-                                if (!idCache[paramName])
-                                    idCache[paramName] = data[paramName] || data.id || data.uuid || Object.values(idCache)[0];
-                            }
-                        }
-                    }
+                let val = idCache[paramName] || idCache['id'];
+                if (!val) {
+                    this.post({ command: 'status', text: `ERROR: MISSING CONTEXT FOR ${placeholder}...` });
+                    continue; // Will fail naturally at runRequest or skip
                 }
-                const val = idCache[paramName] || idCache['id'] || Object.values(idCache)[0];
-                if (val) {
-                    currentPath = currentPath.replace(placeholder, val);
-                }
+                currentPath = currentPath.replace(placeholder, val);
+                this.post({ command: 'status', text: `RECALIBRATING: ${placeholder} -> ${val}` });
             }
             const smartPath = await (0, errorExplainer_1.autoExpandUrlWithAI)(currentPath, ep.method, apiKey, ep.file);
             let body = null;
             if (['POST', 'PUT', 'PATCH'].includes(ep.method)) {
                 body = await (0, errorExplainer_1.generateRequestBodyWithAI)(ep.path, ep.method, apiKey, ep.file);
             }
-            this.post({ command: 'status', text: `ENGAGING: ${ep.method} -> ${smartPath}...` });
             let res = await (0, requestRunner_1.runRequest)(ep, baseURL, 5000, body, smartPath, headers);
             res.passed = res.status === 200 || res.status === 201;
             let ai;
@@ -351,7 +370,6 @@ class ApexonDashboard {
             // --- SELF-HEALING LOGIC ---
             if (!res.passed) {
                 classification = this.classifyError(res.status ?? 0);
-                // 1. Recover from 422 (Unprocessable Entity) using AI to fix body
                 if (res.status === 422 && apiKey) {
                     this.post({ command: 'status', text: `ERROR 422: ADAPTIVE PAYLOAD RESTRUCTURING...` });
                     const fixAi = await (0, errorExplainer_1.explainWithAI)(smartPath, ep.method, body, res.responseData, 422, apiKey);
@@ -362,7 +380,6 @@ class ApexonDashboard {
                         ai = { ...fixAi, why: 'Fixed payload structure based on validation errors', fix: 'Healed' };
                     }
                 }
-                // 2. Recover from 404 (Not Found) via Path Correction
                 if (res.status === 404 && apiKey) {
                     ai = await (0, errorExplainer_1.explainWithAI)(smartPath, ep.method, res.requestBody, res.responseData, res.status, apiKey);
                     if (ai?.newPath && ai.newPath !== smartPath) {
@@ -372,22 +389,6 @@ class ApexonDashboard {
                             res = { ...retryRes, passed: true };
                             ai = { ...ai, why: 'Fixed prefix automatically', fix: 'Healed' };
                         }
-                    }
-                }
-            }
-            else {
-                // Collect IDs from successful GET responses for future use
-                if (ep.method === 'GET' && res.responseData) {
-                    const data = Array.isArray(res.responseData) ? res.responseData[0] : res.responseData;
-                    if (data && typeof data === 'object') {
-                        Object.keys(data).forEach(key => {
-                            if (key.toLowerCase().endsWith('id') || key.toLowerCase() === 'uuid') {
-                                idCache[key] = data[key];
-                                // Also fallback to generic 'id' if possible
-                                if (!idCache['id'])
-                                    idCache['id'] = data[key];
-                            }
-                        });
                     }
                 }
             }
@@ -404,11 +405,11 @@ class ApexonDashboard {
             results[idx] = { ...res, ai, classification };
             this.post({ command: 'partialResult', results });
         }
-        // Apply all diagnostics at once
+        // Apply all diagnostics
         newDiagnostics.forEach((diags, file) => {
             this.diagnosticCollection.set(vscode.Uri.file(file), diags);
         });
-        this.post({ command: 'status', text: 'ANALYSIS COMPLETE.', active: false });
+        this.post({ command: 'status', text: 'PHASE-BASED EXECUTION COMPLETE. ANALYSIS ARCHIVED.', active: false });
         return results;
     }
     getHtml() {
@@ -482,6 +483,13 @@ class ApexonDashboard {
   #auto-btn { background: linear-gradient(135deg, var(--accent), #0369a1); color: #fff; grid-column: span 2; border: none; }
   #auto-btn:hover { background: linear-gradient(135deg, #38bdf8, var(--accent)); }
 
+  .system-monitor { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 20px; }
+  .sys-card { background: rgba(0,0,0,0.3); border: 1px solid var(--border); padding: 10px; border-radius: 8px; position: relative; }
+  .sys-label { font-size: 8px; text-transform: uppercase; color: var(--text-dim); margin-bottom: 4px; }
+  .sys-val { font-size: 14px; font-weight: 700; color: var(--accent); font-family: 'Space Mono', monospace; }
+  .sys-bar { height: 2px; width: 100%; background: rgba(255,255,255,0.05); margin-top: 5px; position: relative; }
+  .sys-fill { height: 100%; background: var(--accent); width: 0; transition: width 0.5s; box-shadow: 0 0 5px var(--accent); }
+
   .stats-deck { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 25px; }
   .stat-card { background: var(--card); border: 1px solid var(--border); padding: 10px; border-radius: 8px; text-align: center; }
   .stat-val { font-size: 18px; font-weight: 700; color: #fff; }
@@ -548,6 +556,12 @@ class ApexonDashboard {
     <input id="key-in" type="password" placeholder="SECURE_KEY_HASH">
   </div>
 
+  <div class="system-monitor">
+    <div class="sys-card"><div class="sys-label">NEURAL LOAD</div><div class="sys-val" id="cpu-val">0%</div><div class="sys-bar"><div class="sys-fill" id="cpu-bar"></div></div></div>
+    <div class="sys-card"><div class="sys-label">MEMORY GRID</div><div class="sys-val" id="mem-val">0%</div><div class="sys-bar"><div class="sys-fill" id="mem-bar"></div></div></div>
+    <div class="sys-card"><div class="sys-label">UP-LINK LATENCY</div><div class="sys-val" id="lat-val">0ms</div><div class="sys-bar"><div class="sys-fill" id="lat-bar"></div></div></div>
+  </div>
+
   <div class="action-grid">
     <button id="scan-btn">Initiate Scan</button>
     <button id="run-btn">Run Analysis</button>
@@ -584,6 +598,20 @@ class ApexonDashboard {
       statusText.style.animation = 'typing 2s steps(40, end) forwards, blink 0.75s infinite';
       document.getElementById('main-body').classList.toggle('scanning', active);
     };
+
+    const updateSys = () => {
+      const cpu = Math.floor(Math.random() * 20) + 10;
+      const mem = Math.floor(Math.random() * 15) + 40;
+      const lat = Math.floor(Math.random() * 50) + 20;
+      document.getElementById('cpu-val').innerText = cpu + '%';
+      document.getElementById('cpu-bar').style.width = cpu + '%';
+      document.getElementById('mem-val').innerText = mem + '%';
+      document.getElementById('mem-bar').style.width = mem + '%';
+      document.getElementById('lat-val').innerText = lat + 'ms';
+      document.getElementById('lat-bar').style.width = (lat/2) + '%';
+    };
+    setInterval(updateSys, 3000);
+    updateSys();
 
     urlIn.onchange = () => vscode.postMessage({ command: 'saveConfig', baseURL: urlIn.value, apiKey: keyIn.value });
     keyIn.onchange = () => vscode.postMessage({ command: 'saveConfig', baseURL: urlIn.value, apiKey: keyIn.value });

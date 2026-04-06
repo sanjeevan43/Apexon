@@ -2,7 +2,7 @@
   "name": "apexon",
   "displayName": "Apexon",
   "description": "Detect, run, and validate API endpoints in your workspace",
-  "version": "0.5.0",
+  "version": "0.5.3",
   "publisher": "sanjeevan43",
   "repository": {
     "type": "git",
@@ -49,7 +49,7 @@
       "properties": {
         "apexon.baseURL": {
           "type": "string",
-          "default": "http://localhost:8000",
+          "default": "https://apexon-sooty.vercel.app",
           "description": "Base URL of the server to test against"
         },
         "apexon.apiKey": {
@@ -73,7 +73,9 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./"
+    "watch": "tsc -watch -p ./",
+    "start": "node ./api/index.js",
+    "vercel": "vercel --prod --yes"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
@@ -81,6 +83,8 @@
     "typescript": "^5.3.0"
   },
   "dependencies": {
-    "axios": "^1.6.0"
+    "axios": "^1.6.0",
+    "cors": "^2.8.6",
+    "express": "^4.22.1"
   }
 }

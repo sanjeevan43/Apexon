@@ -5,14 +5,9 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.runRequest = runRequest;
 const axios_1 = __importDefault(require("axios"));
-/** Normalize path with placeholder values (e.g., :id -> 1) */
+/** Normalize path - no longer using hardcoded defaults like '1' to avoid fake testing */
 function normalizePath(p) {
-    return p
-        .replace(/\{userId\}/g, '1')
-        .replace(/\{id\}/g, '1')
-        .replace(/\{slug\}/g, 'test')
-        .replace(/\{[^}]+\}/g, '1') // Any remaining {param}
-        .replace(/:([a-zA-Z_][a-zA-Z0-9_]*)/g, '1'); // :param style
+    return p;
 }
 /** Executes a single request and measures performance */
 async function runRequest(endpoint, baseURL, timeoutMs, requestBody, overriddenPath, extraHeaders // NEW
